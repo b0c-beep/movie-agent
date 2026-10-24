@@ -18,9 +18,12 @@ venv/
 
 # Node.js
 node_modules/
+.next/
 .npm/
 .yarn/
 coverage/
+playwright-report/
+test-results/
 
 # Build output and temporary files
 build/
@@ -29,6 +32,7 @@ tmp/
 temp/
 *.log
 *.tmp
+*.tsbuildinfo
 
 # Editors and IDEs
 .idea/

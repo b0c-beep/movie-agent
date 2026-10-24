@@ -1,0 +1,50 @@
+[project]
+name = "movie-agent-backend"
+version = "0.1.0"
+description = "Portable API and agent foundation for Movie Agent"
+requires-python = ">=3.13,<3.15"
+dependencies = [
+  "fastapi==0.162.0",
+  "httpx==0.28.1",
+  "pydantic==2.14.1",
+  "pydantic-ai-slim[groq]==2.61.0",
+  "uvicorn[standard]==0.54.0",
+]
+
+[dependency-groups]
+dev = [
+  "mypy==2.4.0",
+  "pytest==9.1.1",
+  "pytest-asyncio==1.3.0",
+  "ruff==0.17.2",
+]
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/movie_agent"]
+
+[tool.vercel]
+entrypoint = "movie_agent.main:app"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+packages = ["movie_agent"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
