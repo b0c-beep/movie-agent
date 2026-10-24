@@ -2,7 +2,7 @@
 
 Movie Agent helps answer the deceptively difficult question: **what should I watch tonight?** It turns conversational requests such as “give me three 1990s dark romances” or “an action movie with Sylvester Stallone” into grounded, country-aware recommendations.
 
-> Status: architecture and implementation planning. The first working release is targeted for Tuesday, October 27, 2026.
+> Status: foundation implementation. The first working release is targeted for Tuesday, October 27, 2026.
 
 ## Planned Product Experience
 
@@ -40,17 +40,60 @@ Required TMDB notice: *This product uses the TMDB API but is not endorsed or cer
 
 ## Repository Layout
 
-The implementation will use `backend/` for the portable FastAPI service, `frontend/` for the Next.js application, and `supabase/` for migrations and database tests. Detailed planning and agent working memory remain local to the development workspace.
+```text
+backend/   FastAPI, Pydantic contracts, Pydantic AI, provider adapters and tests
+frontend/  Next.js application, streamed-event client and browser tests
+supabase/  Database migrations and database tests
+```
+
+Detailed planning and agent working memory remain local to the development workspace.
 
 ## Development
 
-The application has not been scaffolded yet, so build and test commands are not available. This section must be updated as soon as the backend and frontend toolchains are introduced. Secrets belong in local environment files; a sanitized `.env.example` will document required variable names.
+Prerequisites: Python 3.13, [uv](https://docs.astral.sh/uv/), Node.js 20.9 or newer, and npm. Install pinned dependencies from their lockfiles:
+
+```bash
+make install
+```
+
+Run the API and web application in separate terminals:
+
+```bash
+make dev-backend
+make dev-frontend
+```
+
+Open `http://localhost:3000`. The current UI exercises a deterministic SSE fixture through the frontend's same-origin `/api` rewrite. It does not call paid APIs.
+
+Run local checks with:
+
+```bash
+make check
+make test-e2e
+```
+
+The end-to-end command starts both applications and requires a Playwright Chromium installation (`cd frontend && npx playwright install chromium`). Copy the environment examples when live integrations are introduced; never commit populated environment files.
+
+The opt-in Groq compatibility smoke requires `GROQ_API_KEY` and a supported `GROQ_MODEL`. Ordinary tests use Pydantic AI's deterministic test model and do not consume API quota.
+
+### Environment
+
+Create the server-only local environment file:
+
+```bash
+cp backend/.env.example backend/.env
+```
+
+Set `SUPABASE_URL` to the project's API URL and `SUPABASE_SECRET_KEY` to a current `sb_secret_...` backend key. The secret key bypasses Row Level Security: never place it in `frontend/`, prefix it with `NEXT_PUBLIC_`, paste it into tickets or chat, or commit it. The browser does not connect to Supabase directly, so no publishable key is currently required.
+
+The other required live-integration variables are `GROQ_API_KEY`, `GROQ_MODEL`, and `TMDB_API_TOKEN`; `OMDB_API_KEY` is optional. `frontend/.env.local` only needs `BACKEND_ORIGIN` when the backend is not available at the default local address.
 
 Development follows one branch and pull request per phase or independently reviewable part. Tasks become one or more focused commits. Local agents follow the workflow in the ignored `AGENTS.md`; the README will gain setup commands, screenshots, demo instructions, tradeoffs, and known limitations as implementation progresses.
 
 ## Current Limitations
 
-- No application code or deployment exists yet.
+- Only the typed contracts, health endpoint, fixture stream, and transport-proof UI exist; real recommendation behavior is not implemented yet.
+- Preview deployment, Groq compatibility, and external credentials still require live verification.
 - Availability is provider-level and country-specific; it may be incomplete or stale.
 - Subjective qualities such as “dark” are interpretations, not objective catalog fields.
 - Rotten Tomatoes enrichment is optional and may be absent for individual titles.
