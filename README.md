@@ -2,7 +2,7 @@
 
 Movie Agent helps answer the deceptively difficult question: **what should I watch tonight?** It turns conversational requests such as “give me three 1990s dark romances” or “an action movie with Sylvester Stallone” into grounded, country-aware recommendations.
 
-> Status: Phase 2 code is merged and deployed. The Supabase schema, session unlock, local end-to-end flow, and successful hosted recommendation runs have been verified. Some hosted runs still fail with `recommendation_failed`; investigate the production provider response before calling Phase 2 complete.
+> Status: Phase 2 implementation is merged; final verification fixes are in review. Hosted rating-threshold filtering passed against the production backend at `f536fba`. Earlier hosted failures stopped during intent extraction, but their exception details were not retained, so the original cause cannot be recovered. This change adds privacy-safe stage and exception-type diagnostics for future failures.
 
 ## Planned Product Experience
 
@@ -112,12 +112,13 @@ PREVIEW_BASE_URL=https://your-frontend-preview.example npm run test:e2e
 
 `PREVIEW_BASE_URL` skips local server startup. The first browser test stubs the access and recommendation APIs; it checks unlock state, streamed recommendation parsing, and card rendering. The second uses the fixture endpoint through the same-origin `/api` rewrite and checks incremental SSE delivery. Use the actual reachable deployment URL; a protected preview may require a browser session with Vercel access.
 
-The Phase 1 deployment proof passed on October 25, 2026: [frontend](https://movie-agent-frontend-iota.vercel.app/) forwarded `/api/health` to the [backend](https://movie-agent-backend.vercel.app/api/health), and both deployed Playwright fixture tests passed, including incremental SSE delivery and HttpOnly cookie forwarding. The backend's direct fixture stream delivered five ordered events over about 0.31 seconds. Phase 2 production health and passcode unlock return successfully. Hosted recommendation runs have returned populated batches and an honest shortfall, but some runs ended with `recommendation_failed`; the failure cause remains unresolved.
+The Phase 1 deployment proof passed on October 25, 2026: [frontend](https://movie-agent-frontend-iota.vercel.app/) forwarded `/api/health` to the [backend](https://movie-agent-backend.vercel.app/api/health), and both deployed Playwright fixture tests passed, including incremental SSE delivery and HttpOnly cookie forwarding. The backend's direct fixture stream delivered five ordered events over about 0.31 seconds. Phase 2 production health and passcode unlock return successfully. A hosted request for a TMDB rating minimum of 6.5 returned a movie meeting the threshold. A seven-day aggregate showed populated batches and an honest shortfall; four other runs failed before intent extraction completed. Their exception details were not retained. The final verification change adds safe failure-stage and exception-type logging without recording prompts, provider messages, or tracebacks.
 
 ## Current Limitations
 
 - The protected passcode/session flow, TMDB adapter, recommendation API and cards are merged to `main` and deployed. The Supabase schema and core persistence RPCs have been exercised against the project database.
-- The Phase 2 browser test uses deterministic API fixtures. Hosted runs have returned recommendations and an honest shortfall, but intermittent `recommendation_failed` outcomes remain under investigation. Live verification of the newly deployed rating threshold is still pending.
+- The Phase 2 browser test uses deterministic API fixtures. The live rating threshold passed at production revision `f536fba`. Historical `recommendation_failed` runs ended before intent update; old logs have expired and do not establish their exception cause. Safe diagnostics are included in the pending Phase 2 verification PR and will only help identify a recurrence after deployment.
+- Live quota-boundary and expired-lease checks passed. Concurrent claims left exactly one running claim, as intended, but the losing live client timed out instead of receiving a conflict response. The SQLSTATE-to-HTTP 409 mapping is covered locally; the live timeout's layer is still under investigation.
 - Availability is provider-level and country-specific; it may be incomplete or stale.
 - Subjective qualities such as “dark” are interpretations, not objective catalog fields.
 - Rotten Tomatoes enrichment is optional and may be absent for individual titles.

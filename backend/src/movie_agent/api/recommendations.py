@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import re
 from collections.abc import AsyncIterator
@@ -34,6 +35,7 @@ from movie_agent.services.persistence import (
 from movie_agent.services.tmdb import TmdbClient, TmdbError
 
 router = APIRouter(prefix="/api/recommendations", tags=["recommendations"])
+logger = logging.getLogger(__name__)
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 MAX_RUN_SECONDS = 90
 RUN_LEASE_SECONDS = 120
@@ -53,6 +55,13 @@ class RecommendationRunRequest(BaseModel):
     def validate_request_id(cls, value: str) -> str:
         if _REQUEST_ID.fullmatch(value) is None:
             raise ValueError("client_request_id has unsupported characters")
+        return value
+
+    @field_validator("message")
+    @classmethod
+    def validate_message_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("message must not be blank")
         return value
 
 
@@ -199,6 +208,7 @@ async def stream_recommendations(
 
         current_intent = prior_intent
         current_state: dict[str, Any] = {"intent": prior_intent.model_dump(mode="json")}
+        failure_stage = "intent_extraction"
         try:
             yield emit(
                 TraceStage.PREDICT,
@@ -213,6 +223,7 @@ async def stream_recommendations(
                     "Interpreting the latest request against saved preferences",
                 )
                 patch = await extract_intent_patch(body.message, prior_intent)
+                failure_stage = "intent_merge"
                 merge_base = (
                     MovieIntent() if patch.turn_kind is TurnKind.NEW_SEARCH else prior_intent
                 )
@@ -263,6 +274,7 @@ async def stream_recommendations(
                         clarification,
                         data=result_data,
                     )
+                    failure_stage = "run_finalization"
                     await _finalize(
                         persistence,
                         session_id,
@@ -281,6 +293,7 @@ async def stream_recommendations(
                     "Resolving people, searching TMDB, and checking movie details",
                     metadata={"provider": "tmdb"},
                 )
+                failure_stage = "tmdb_recommendations"
                 assembly = await assemble_recommendations(
                     tmdb,
                     current_intent,
@@ -343,6 +356,7 @@ async def stream_recommendations(
                     "Recommendation run completed",
                     metadata={"conversation_id": str(conversation_id)},
                 )
+                failure_stage = "run_finalization"
                 await _finalize(
                     persistence,
                     session_id,
@@ -364,6 +378,7 @@ async def stream_recommendations(
             raise
         except Exception as error:
             code = _failure_code(error)
+            _log_run_failure(failure_stage, claimed.run_id, error, code)
             terminal = emit(
                 TraceStage.COMPLETE,
                 TraceEventType.FAILED,
@@ -511,3 +526,14 @@ def _failure_code(error: Exception) -> str:
     if isinstance(error, TmdbError):
         return "tmdb_unavailable"
     return "recommendation_failed"
+
+
+def _log_run_failure(stage: str, run_id: UUID, error: Exception, code: str) -> None:
+    """Log bounded diagnostics without user input, provider text, or a traceback."""
+    logger.warning(
+        "recommendation_run_failed stage=%s exception_type=%s run_id=%s error_code=%s",
+        stage,
+        type(error).__name__,
+        run_id,
+        code,
+    )

@@ -36,6 +36,32 @@ def test_postgres_usage_limit_error_maps_to_http_429() -> None:
     assert response.status_code == 429
 
 
+def test_active_run_error_maps_to_http_409() -> None:
+    error = PersistenceError("Persistence request failed", status_code=400, code="40001")
+
+    response = recommendations_api._persistence_http_error(error)
+
+    assert response.status_code == 409
+
+
+def test_run_failure_log_has_safe_diagnostics_only(caplog: pytest.LogCaptureFixture) -> None:
+    secret_text = "provider response contains sensitive prompt details"
+
+    recommendations_api._log_run_failure(
+        "intent_extraction", uuid4(), RuntimeError(secret_text), "recommendation_failed"
+    )
+
+    assert "stage=intent_extraction" in caplog.text
+    assert "exception_type=RuntimeError" in caplog.text
+    assert "recommendation_failed" in caplog.text
+    assert secret_text not in caplog.text
+
+
+def test_recommendation_request_rejects_whitespace_only_message() -> None:
+    with pytest.raises(ValueError, match="message must not be blank"):
+        recommendations_api.RecommendationRunRequest(message=" \t ", client_request_id="request-1")
+
+
 def test_expired_run_replay_without_trace_returns_a_failed_terminal_event() -> None:
     claimed = ClaimedRun(
         run_id=uuid4(),
