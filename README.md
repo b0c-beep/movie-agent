@@ -74,7 +74,7 @@ make test-e2e
 
 The end-to-end command starts both applications and requires a Playwright Chromium installation (`cd frontend && npx playwright install chromium`). Copy the environment examples when live integrations are introduced; never commit populated environment files.
 
-The opt-in Groq compatibility smoke requires `GROQ_API_KEY` and a supported `GROQ_MODEL`. Ordinary tests use Pydantic AI's deterministic test model and do not consume API quota.
+The opt-in Groq compatibility smoke requires `GROQ_API_KEY` and a supported `GROQ_MODEL`. `openai/gpt-oss-20b` passed the live tool and typed-output smoke. Ordinary tests use Pydantic AI's deterministic test model and do not consume API quota.
 
 ### Environment
 
@@ -90,10 +90,25 @@ The other required live-integration variables are `GROQ_API_KEY`, `GROQ_MODEL`, 
 
 Development follows one branch and pull request per phase or independently reviewable part. Tasks become one or more focused commits. Local agents follow the workflow in the ignored `AGENTS.md`; the README will gain setup commands, screenshots, demo instructions, tradeoffs, and known limitations as implementation progresses.
 
+### Preview deployment proof
+
+Import this repository into two Vercel projects, selecting `backend` and `frontend` as their respective Root Directories. Set `BACKEND_ORIGIN` on the frontend project to the backend deployment origin, without a trailing `/api`. Deploy the backend first, then the frontend. The current fixture endpoint needs no live provider secrets in Vercel. Keep preview environment variables separate from production values; changing a Vercel variable requires a new deployment.
+
+The app roots include `.vercelignore` files so a later CLI deployment does not upload local `.env` files. Git imports use the tracked repository and its `.gitignore` rules.
+
+Verify `GET /api/health` on the backend deployment, then run the browser fixture check through the frontend deployment:
+
+```bash
+cd frontend
+PREVIEW_BASE_URL=https://your-frontend-preview.example npm run test:e2e
+```
+
+`PREVIEW_BASE_URL` skips local server startup. The browser test checks the frontend's `/api` forwarding, the completed stream, and the forwarded HttpOnly fixture cookie. Use the actual reachable deployment URL; a protected preview may require a browser session with Vercel access.
+
 ## Current Limitations
 
 - Only the typed contracts, health endpoint, fixture stream, and transport-proof UI exist; real recommendation behavior is not implemented yet.
-- Preview deployment, Groq compatibility, and external credentials still require live verification.
+- Vercel preview streaming and cookies still require deployed verification. Groq tool/typed-output compatibility and API credential authentication have been checked; real recommendation behavior and Supabase tables have not.
 - Availability is provider-level and country-specific; it may be incomplete or stale.
 - Subjective qualities such as “dark” are interpretations, not objective catalog fields.
 - Rotten Tomatoes enrichment is optional and may be absent for individual titles.

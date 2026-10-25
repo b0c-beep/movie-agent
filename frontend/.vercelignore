@@ -1,0 +1,5 @@
+.env
+.env.*
+AGENTS.md
+tests/
+test-results/
