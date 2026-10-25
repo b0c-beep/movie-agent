@@ -1,13 +1,15 @@
 import { defineConfig } from "@playwright/test";
 
+const previewBaseUrl = process.env.PREVIEW_BASE_URL;
+
 export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: false,
   use: {
-    baseURL: "http://127.0.0.1:3000",
+    baseURL: previewBaseUrl ?? "http://127.0.0.1:3000",
     trace: "retain-on-failure",
   },
-  webServer: [
+  webServer: previewBaseUrl ? undefined : [
     {
       command: "uv run uvicorn movie_agent.main:app --host 127.0.0.1 --port 8000",
       cwd: "../backend",

@@ -1,0 +1,7 @@
+.env
+.env.*
+AGENTS.md
+tests/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

@@ -19,6 +19,7 @@ venv/
 # Node.js
 node_modules/
 .next/
+.vercel/
 .npm/
 .yarn/
 coverage/
