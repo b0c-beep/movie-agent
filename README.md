@@ -2,7 +2,7 @@
 
 Movie Agent helps answer the deceptively difficult question: **what should I watch tonight?** It turns conversational requests such as “give me three 1990s dark romances” or “an action movie with Sylvester Stallone” into grounded, country-aware recommendations.
 
-> Status: Phase 2 protected recommendation code has merged to `main` in PR #7, but is not live on the hosted app. Local checks and Vercel preview builds pass; the Supabase migration and hosted data flow still need verification.
+> Status: Phase 2 code is merged and deployed. The Supabase schema, session unlock, and local end-to-end recommendation flow have been verified. Hosted unlock also works, but a hosted recommendation attempt still fails during intent extraction; the production provider configuration or response needs follow-up.
 
 ## Planned Product Experience
 
@@ -86,7 +86,7 @@ cp backend/.env.example backend/.env
 
 Set `SUPABASE_URL` to the project's API URL and `SUPABASE_SECRET_KEY` to a current `sb_secret_...` backend key. The secret key bypasses Row Level Security: never place it in `frontend/`, prefix it with `NEXT_PUBLIC_`, paste it into tickets or chat, or commit it. The browser does not connect to Supabase directly, so no publishable key is currently required.
 
-Before using live recommendations, apply `supabase/migrations/20261025120000_initial_schema.sql` in the Supabase SQL Editor. It creates the private session/conversation/run/usage tables and their atomic run RPCs. The migration has local contract coverage but still needs to be applied and exercised against the project's database.
+Before using live recommendations on a new database, apply the files in `supabase/migrations/` in filename order in the Supabase SQL Editor. They create the private session/conversation/run/usage tables and their atomic run RPCs. The project database has all current migrations applied; live checks cover unlock throttling, conversation ownership, run claims, replay, and finalization. Keep later forward fixes applied when upgrading an existing database.
 
 Set `APP_PASSCODE` to the shared passcode shown at app entry. Set `SESSION_SIGNING_KEY` to a private random value of at least 32 bytes; generate one with `openssl rand -hex 32`. The passcode is checked without storing it in the database, and signed session cookies are HttpOnly. Unlock attempts are limited to ten per client IP per UTC hour; Supabase stores only a keyed HMAC bucket value, not the IP address. Keep both secrets private. The local `make dev-backend` command loads `backend/.env`; Vercel deployments must set these as backend project environment variables and redeploy after changes.
 
@@ -111,12 +111,12 @@ PREVIEW_BASE_URL=https://your-frontend-preview.example npm run test:e2e
 
 `PREVIEW_BASE_URL` skips local server startup. The first browser test stubs the access and recommendation APIs; it checks unlock state, streamed recommendation parsing, and card rendering. The second uses the fixture endpoint through the same-origin `/api` rewrite and checks incremental SSE delivery. Use the actual reachable deployment URL; a protected preview may require a browser session with Vercel access.
 
-The Phase 1 deployment proof passed on October 25, 2026: [frontend](https://movie-agent-frontend-iota.vercel.app/) forwarded `/api/health` to the [backend](https://movie-agent-backend.vercel.app/api/health), and both deployed Playwright fixture tests passed, including incremental SSE delivery and HttpOnly cookie forwarding. The backend's direct fixture stream delivered five ordered events over about 0.31 seconds. These URLs document the Phase 1 deployment and still need the Phase 2 migration and backend environment configuration before live recommendations are available.
+The Phase 1 deployment proof passed on October 25, 2026: [frontend](https://movie-agent-frontend-iota.vercel.app/) forwarded `/api/health` to the [backend](https://movie-agent-backend.vercel.app/api/health), and both deployed Playwright fixture tests passed, including incremental SSE delivery and HttpOnly cookie forwarding. The backend's direct fixture stream delivered five ordered events over about 0.31 seconds. Phase 2 production health and passcode unlock now return successfully. A hosted recommendation smoke reached the agent but ended with a generic recommendation failure; the local full API flow completed successfully, so check the Vercel Groq configuration and provider response before calling hosted Phase 2 verified.
 
 ## Current Limitations
 
-- The protected passcode/session flow, TMDB adapter, recommendation API and cards are merged to `main`. Real Supabase migration/RPC behavior and live recommendation quality have not been verified yet.
-- The Phase 2 browser test uses deterministic API fixtures. Hosted Phase 1 health, fixture streaming, and cookie forwarding passed; the current recommendation route still needs a deployed smoke test after applying the migration and setting backend secrets.
+- The protected passcode/session flow, TMDB adapter, recommendation API and cards are merged to `main` and deployed. The Supabase schema and core persistence RPCs have been exercised against the project database.
+- The Phase 2 browser test uses deterministic API fixtures. Hosted health and unlock pass, but the first hosted recommendation smoke ended with `recommendation_failed`; real hosted recommendation quality and follow-up behavior remain unverified.
 - Availability is provider-level and country-specific; it may be incomplete or stale.
 - Subjective qualities such as “dark” are interpretations, not objective catalog fields.
 - Rotten Tomatoes enrichment is optional and may be absent for individual titles.
