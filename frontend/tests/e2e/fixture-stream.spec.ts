@@ -116,7 +116,7 @@ test("unlocks the app and displays streamed grounded recommendations", async ({ 
 test("shows streamed failures and keeps the saved conversation version", async ({ page }) => {
   const savedConversation = { id: "fixture-conversation", version: 3 };
   await page.addInitScript((conversation) => {
-    window.localStorage.setItem("movie-agent-conversation", JSON.stringify(conversation));
+    window.sessionStorage.setItem("movie-agent-conversation", JSON.stringify(conversation));
   }, savedConversation);
   await page.route("**/api/auth/session", (route) =>
     route.fulfill({ status: 401, contentType: "application/json", body: '{"detail":"locked"}' }),
@@ -185,8 +185,83 @@ test("shows streamed failures and keeps the saved conversation version", async (
   await expect(page.getByTestId("status")).toHaveText("Failed");
   await expect(page.locator(".trace [role=alert]")).toContainText("couldn’t interpret that request");
   await expect
-    .poll(() => page.evaluate(() => localStorage.getItem("movie-agent-conversation")))
+    .poll(() => page.evaluate(() => sessionStorage.getItem("movie-agent-conversation")))
     .toBe(JSON.stringify(savedConversation));
+});
+
+test("asks for the passcode in a new tab but remembers it after reload in the current tab", async ({
+  page,
+}) => {
+  let sessionChecks = 0;
+  let unlocks = 0;
+  const context = page.context();
+  await context.route("**/api/auth/session", (route) => {
+    sessionChecks += 1;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authenticated: true,
+        session_id: "fixture-session",
+        expires_at: "2030-01-01T00:00:00Z",
+      }),
+    });
+  });
+  await context.route("**/api/auth/unlock", (route) => {
+    unlocks += 1;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authenticated: true,
+        session_id: "fixture-session",
+        expires_at: "2030-01-01T00:00:00Z",
+      }),
+    });
+  });
+  await context.route("**/api/recommendations/conversations/fixture-conversation", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        conversation_id: "fixture-conversation",
+        version: 3,
+        intent: {},
+        result: null,
+      }),
+    }),
+  );
+
+  await page.goto("/");
+  await expect(page.getByLabel("Passcode")).toBeVisible();
+  expect(sessionChecks).toBe(0);
+  await page.getByLabel("Passcode").fill("fixture-passcode");
+  await page.getByRole("button", { name: "Enter" }).click();
+  await expect(page.getByRole("heading", { name: "What should we watch tonight?" })).toBeVisible();
+  expect(unlocks).toBe(1);
+
+  await page.evaluate(() => {
+    sessionStorage.setItem(
+      "movie-agent-conversation",
+      JSON.stringify({ id: "fixture-conversation", version: 3 }),
+    );
+  });
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "What should we watch tonight?" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "New search" })).toBeVisible();
+  expect(sessionChecks).toBe(1);
+
+  const popupPromise = context.waitForEvent("page");
+  await page.evaluate(() => window.open("/", "_blank"));
+  const newTab = await popupPromise;
+  await newTab.waitForLoadState();
+  await expect(newTab.getByLabel("Passcode")).toBeVisible();
+  expect(sessionChecks).toBe(1);
+  await newTab.getByLabel("Passcode").fill("fixture-passcode");
+  await newTab.getByRole("button", { name: "Enter" }).click();
+  await expect(newTab.getByRole("heading", { name: "What should we watch tonight?" })).toBeVisible();
+  await expect(newTab.getByRole("button", { name: "New search" })).toHaveCount(0);
+  expect(unlocks).toBe(2);
 });
 
 test("delivers an event before the stream completes", async ({ page }) => {

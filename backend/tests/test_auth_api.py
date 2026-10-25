@@ -4,14 +4,15 @@ import hashlib
 import hmac
 import json
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import httpx
 import pytest
 
-from movie_agent.api.auth import SESSION_COOKIE_NAME
+from movie_agent.api.auth import SESSION_COOKIE_NAME, SESSION_TTL
 from movie_agent.main import app
+from movie_agent.security.sessions import sign_session_token
 from movie_agent.services.persistence import PersistenceClient
 
 SIGNING_KEY = "test-session-signing-key-that-is-at-least-32-bytes"
@@ -90,10 +91,46 @@ async def test_unlock_consumes_allowed_attempt_before_creating_session(
         assert SESSION_COOKIE_NAME in cookie
         assert "httponly" in cookie.lower()
         assert "secure" not in cookie.lower()
+        assert "max-age" not in cookie.lower()
+        expires_at = datetime.fromisoformat(response.json()["expires_at"])
+        assert 0 < (expires_at - datetime.now(UTC)).total_seconds() <= SESSION_TTL.total_seconds()
         assert session.status_code == 200
         assert session.json()["session_id"] == response.json()["session_id"]
         assert [request.url.path for request in requests] == [AUTH_RPC_PATH, SESSIONS_PATH]
         assert UUID(response.json()["session_id"])
+    finally:
+        monkeypatch.setattr(app.state, "persistence", None, raising=False)
+        await persistence_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_unlock_reuses_valid_session_cookie_for_a_new_tab(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_access(monkeypatch)
+    existing_session_id = UUID("8b532465-4f0b-462e-bfd8-b58904a54f74")
+    existing_expiry = (datetime.now(UTC) + timedelta(days=2)).replace(microsecond=0)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.url.path == AUTH_RPC_PATH
+        return httpx.Response(200, json=[{"allowed": True, "request_count": 2}])
+
+    persistence_http = _install_persistence(monkeypatch, handler)
+    token = sign_session_token(existing_session_id, existing_expiry, SIGNING_KEY)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, token)
+            response = await client.post("/api/auth/unlock", json={"passcode": "movie-night"})
+
+        assert response.status_code == 200
+        assert response.json()["session_id"] == str(existing_session_id)
+        assert datetime.fromisoformat(response.json()["expires_at"]) == existing_expiry
+        assert "set-cookie" not in response.headers
+        assert [request.url.path for request in requests] == [AUTH_RPC_PATH]
     finally:
         monkeypatch.setattr(app.state, "persistence", None, raising=False)
         await persistence_http.aclose()
