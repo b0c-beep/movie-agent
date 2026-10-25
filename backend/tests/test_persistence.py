@@ -108,6 +108,63 @@ async def test_consume_auth_attempt_calls_rpc_with_hashed_key_and_returns_outcom
 
 
 @pytest.mark.asyncio
+async def test_get_run_reports_current_owned_conversation_version() -> None:
+    session_id = uuid4()
+    conversation_id = uuid4()
+    run_id = uuid4()
+    requests: list[httpx.Request] = []
+    now = "2026-10-25T12:00:00+00:00"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/runs"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": str(run_id),
+                        "conversation_id": str(conversation_id),
+                        "status": "completed",
+                        "base_version": 2,
+                        "input": {"message": "A movie"},
+                        "result": {"recommendations": []},
+                        "trace": [],
+                        "error_code": None,
+                        "created_at": now,
+                        "completed_at": now,
+                    }
+                ],
+            )
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": str(conversation_id),
+                    "session_id": str(session_id),
+                    "state": {},
+                    "version": 3,
+                    "active_run_id": None,
+                    "active_run_lease": None,
+                    "lease_expires_at": None,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            ],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = PersistenceClient(http, BASE_URL, SECRET)
+        run = await client.get_run(session_id, run_id)
+
+    assert run is not None
+    assert run.base_version == 2
+    assert run.conversation_version == 3
+    assert run.input == {"message": "A movie"}
+    assert len(requests) == 2
+    assert requests[1].url.params["session_id"] == f"eq.{session_id}"
+
+
+@pytest.mark.asyncio
 async def test_get_conversation_scopes_by_session_and_returns_none_when_missing() -> None:
     requests: list[httpx.Request] = []
     session_id = uuid4()

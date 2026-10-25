@@ -18,6 +18,7 @@ class PersonConstraint(BaseModel):
 
     name: str = Field(min_length=1, max_length=120)
     role: str | None = Field(default=None, max_length=60)
+    tmdb_id: int | None = Field(default=None, gt=0)
 
 
 class StringCollectionPatch(BaseModel):

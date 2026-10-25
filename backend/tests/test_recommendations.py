@@ -586,7 +586,13 @@ async def test_hard_constraint_shortfalls_use_details_and_report_constraints() -
 
     assert [recommendation.movie.tmdb_id for recommendation in result.batch.recommendations] == [5]
     assert client.detail_calls == [1, 2, 3, 4, 5]
-    assert client.provider_calls == [(5, "RO")]
+    assert client.provider_calls == [(5, "RO"), (1, "RO"), (2, "RO"), (3, "RO")]
+    assert [item.recommendation.movie.tmdb_id for item in result.batch.alternatives] == [1, 2, 3]
+    assert [item.unmet_filters for item in result.batch.alternatives] == [
+        ["year: 1990-1999"],
+        ["genre: Comedy"],
+        ["runtime: <= 120 minutes"],
+    ]
     filters, _ = client.discover_calls[0]
     assert filters.people_ids == [9999]
     assert client.people_calls == ["Jim Carrey"]
@@ -833,3 +839,241 @@ async def test_provider_fetches_are_bounded_and_preserve_recommendation_order() 
     assert [recommendation.movie.tmdb_id for recommendation in result.batch.recommendations] == (
         list(range(1, 9))
     )
+
+
+def test_known_mood_terms_are_kept_soft_and_unknown_genres_need_clarification() -> None:
+    result = merge_intent(
+        MovieIntent(),
+        MovieIntentPatch(
+            turn_kind=TurnKind.NEW_SEARCH,
+            genres=StringCollectionPatch(set=["Cozy", "Suspenseful", "Comedy"]),
+        ),
+    )
+
+    assert result.intent.genres == ["Comedy"]
+    assert result.intent.moods == ["Cozy", "Suspenseful"]
+    assert any(issue.code == "mood_moved_from_genre" for issue in result.validation_issues)
+
+    unsupported = merge_intent(
+        MovieIntent(),
+        MovieIntentPatch(
+            turn_kind=TurnKind.NEW_SEARCH,
+            genres=StringCollectionPatch(set=["psychological"]),
+        ),
+    )
+    assert unsupported.intent.genres == ["psychological"]
+    assert unsupported.intent.moods == []
+    assert unsupported.clarification is not None
+    assert "another genre" in unsupported.clarification
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_person_returns_grounded_choices_without_discovery() -> None:
+    class AmbiguousPeopleClient(FakeTmdbClient):
+        async def search_people(self, name: str, *, page: int = 1) -> TmdbPersonPage:
+            self.people_calls.append(name)
+            return TmdbPersonPage(
+                page=page,
+                total_pages=1,
+                total_results=2,
+                results=[
+                    TmdbPerson(
+                        tmdb_id=101,
+                        name=name,
+                        known_for_department="Acting",
+                        known_for_titles=["First Franchise"],
+                    ),
+                    TmdbPerson(
+                        tmdb_id=202,
+                        name=name,
+                        known_for_department="Directing",
+                        known_for_titles=["Second Feature"],
+                    ),
+                ],
+            )
+
+    client = AmbiguousPeopleClient()
+    result = await assemble_recommendations(
+        client,
+        MovieIntent(people=[PersonConstraint(name="Chris Evans")], requested_count=1),
+    )
+
+    assert result.batch.recommendations == []
+    assert client.discover_calls == []
+    assert result.clarification is not None
+    assert len(result.clarification.options) == 2
+    assert {option.tmdb_id for option in result.clarification.options} == {101, 202}
+    assert all(option.kind == "person" for option in result.clarification.options)
+    assert any(issue.code == "person_ambiguous" for issue in result.issues)
+
+
+@pytest.mark.asyncio
+async def test_resolved_person_id_is_verified_even_when_tmdb_name_differs() -> None:
+    client = FakeTmdbClient(
+        pages={1: _page(1, 1, [_candidate(1)])},
+        details={1: _details(1, director="Different Canonical Name")},
+    )
+
+    result = await assemble_recommendations(
+        client,
+        MovieIntent(
+            people=[PersonConstraint(name="Alias Name", role="director", tmdb_id=2000)],
+            requested_count=1,
+        ),
+    )
+
+    filters, _ = client.discover_calls[0]
+    assert filters.crew_ids == [2000]
+    assert filters.people_ids == []
+    assert client.people_calls == []
+    assert [item.movie.tmdb_id for item in result.batch.recommendations] == [1]
+
+
+@pytest.mark.asyncio
+async def test_shortfall_returns_bounded_alternative_details_without_refetching() -> None:
+    intent = MovieIntent(genres=["Comedy"], runtime_max_minutes=60, requested_count=1)
+    candidates = [_candidate(index) for index in range(1, 9)]
+    details = {index: _details(index, runtime=120) for index in range(1, 9)}
+    client = FakeTmdbClient(pages={1: _page(1, 1, candidates)}, details=details)
+
+    result = await assemble_recommendations(client, intent)
+
+    assert result.batch.recommendations == []
+    assert 1 <= len(result.batch.alternatives) <= 3
+    assert client.discover_calls == [(client.discover_calls[0][0], 1)]
+    assert client.detail_calls == [1, 2, 3]
+    for alternative in result.batch.alternatives:
+        assert "runtime: <= 60 minutes" in alternative.unmet_filters
+
+
+@pytest.mark.asyncio
+async def test_sparse_exact_results_also_return_separate_closest_alternatives() -> None:
+    intent = MovieIntent(genres=["Comedy"], runtime_max_minutes=100, requested_count=3)
+    candidates = [_candidate(index) for index in range(1, 4)]
+    details = {
+        1: _details(1, runtime=90),
+        2: _details(2, runtime=110),
+        3: _details(3, runtime=140),
+    }
+    client = FakeTmdbClient(pages={1: _page(1, 1, candidates)}, details=details)
+
+    result = await assemble_recommendations(client, intent)
+
+    assert [item.movie.tmdb_id for item in result.batch.recommendations] == [1]
+    assert [item.recommendation.movie.tmdb_id for item in result.batch.alternatives] == [2, 3]
+    assert all(
+        item.unmet_filters == ["runtime: <= 100 minutes"] for item in result.batch.alternatives
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_resolved_minor_spelling_variant_uses_grounded_tmdb_id() -> None:
+    class AliasPeopleClient(FakeTmdbClient):
+        async def search_people(self, name: str, *, page: int = 1) -> TmdbPersonPage:
+            self.people_calls.append(name)
+            return TmdbPersonPage(
+                page=page,
+                total_pages=1,
+                total_results=1,
+                results=[
+                    TmdbPerson(
+                        tmdb_id=555,
+                        name="Canonical Actor Name",
+                        known_for_department="Acting",
+                    )
+                ],
+            )
+
+    details = _details(1).model_copy(
+        update={
+            "cast": [
+                TmdbCastMember(
+                    tmdb_id=555,
+                    name="Canonical Actor Name",
+                    character=None,
+                    order=0,
+                )
+            ]
+        }
+    )
+    client = AliasPeopleClient(
+        pages={1: _page(1, 1, [_candidate(1)])},
+        details={1: details},
+    )
+
+    result = await assemble_recommendations(
+        client,
+        MovieIntent(people=[PersonConstraint(name="Canonical Actor Nam")], requested_count=1),
+    )
+
+    filters, _ = client.discover_calls[0]
+    assert filters.people_ids == [555]
+    assert [item.movie.tmdb_id for item in result.batch.recommendations] == [1]
+
+
+@pytest.mark.asyncio
+async def test_chosen_person_id_is_authoritative_over_a_matching_name() -> None:
+    client = FakeTmdbClient(
+        pages={1: _page(1, 1, [_candidate(1)])},
+        details={1: _details(1, cast_names=["Chris Evans"])},
+    )
+
+    result = await assemble_recommendations(
+        client,
+        MovieIntent(
+            people=[PersonConstraint(name="Chris Evans", tmdb_id=202)],
+            requested_count=1,
+        ),
+    )
+
+    assert result.batch.recommendations == []
+    assert any(issue.code == "candidate_rejected" for issue in result.issues)
+
+
+@pytest.mark.asyncio
+async def test_alternative_discovery_failures_do_not_fail_the_run() -> None:
+    class FailingAlternativesClient(FakeTmdbClient):
+        async def discover_movies(
+            self,
+            filters: TmdbDiscoverFilters,
+            *,
+            page: int = 1,
+        ) -> TmdbMoviePage:
+            self.discover_calls.append((filters, page))
+            if len(self.discover_calls) > 1:
+                raise TmdbError("alternative discovery failed")
+            return self.pages.get(page, _page(page, 0, []))
+
+    intent = MovieIntent(genres=["Comedy"], runtime_max_minutes=60, requested_count=1)
+    client = FailingAlternativesClient(
+        pages={1: _page(1, 1, [_candidate(1)])},
+        details={1: _details(1, runtime=120)},
+    )
+
+    result = await assemble_recommendations(client, intent)
+
+    assert result.batch.recommendations == []
+    assert len(result.batch.alternatives) == 1
+    assert result.batch.alternatives[0].unmet_filters == ["runtime: <= 60 minutes"]
+
+
+@pytest.mark.asyncio
+async def test_country_refresh_preserves_and_refreshes_alternatives() -> None:
+    intent = MovieIntent(genres=["Comedy"], runtime_max_minutes=60, requested_count=1)
+    client = FakeTmdbClient(
+        pages={1: _page(1, 1, [_candidate(1)])},
+        details={1: _details(1, runtime=120)},
+        providers={1: _watch(country="RO", subscription=[_provider(8, "RO Streamer")])},
+    )
+    initial = await assemble_recommendations(client, intent)
+    assert len(initial.batch.alternatives) == 1
+    client.providers = {1: _watch(country="US", subscription=[_provider(18, "US Streamer")])}
+
+    refreshed = await refresh_recommendation_availability(client, initial.batch, country="US")
+
+    assert len(refreshed.batch.alternatives) == 1
+    alternative = refreshed.batch.alternatives[0]
+    assert alternative.unmet_filters == ["runtime: <= 60 minutes"]
+    assert alternative.recommendation.movie.watch_options is not None
+    assert alternative.recommendation.movie.watch_options.country == "US"
+    assert alternative.recommendation.movie.watch_options.subscription[0].name == "US Streamer"

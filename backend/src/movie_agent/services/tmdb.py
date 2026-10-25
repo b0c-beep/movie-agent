@@ -155,6 +155,9 @@ class TmdbClient:
                 "original_title": payload.get("original_title"),
                 "release_year": _release_year(payload.get("release_date")),
                 "runtime_minutes": _runtime(payload.get("runtime")),
+                "original_language": _optional_text(
+                    payload.get("original_language"), "movie original language"
+                ),
                 "genres": _named_values(payload.get("genres"), "movie genres"),
                 "overview": _optional_text(payload.get("overview"), "movie overview") or "",
                 "poster_path": payload.get("poster_path"),

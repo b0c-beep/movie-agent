@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
+import math
 import os
 import re
-from collections.abc import AsyncIterator
-from typing import Annotated, Any
+from collections.abc import AsyncIterator, Sequence
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic_ai.exceptions import ModelRateLimitError
 
 from movie_agent.agent.intent import extract_intent_patch
 from movie_agent.agent.recommendations import (
@@ -19,17 +22,28 @@ from movie_agent.agent.recommendations import (
     ProviderLookup,
     ProviderLookupOutcome,
     assemble_recommendations,
+    is_supported_tmdb_genre,
     merge_intent,
     refresh_recommendation_availability,
 )
 from movie_agent.api.auth import require_session_id
+from movie_agent.models.clarification import (
+    ClarificationOption,
+    PendingClarification,
+    StoredClarificationOption,
+)
 from movie_agent.models.events import (
     EventOrigin,
     TraceEvent,
     TraceEventType,
     TraceStage,
 )
-from movie_agent.models.intent import MovieIntent, TurnKind
+from movie_agent.models.intent import (
+    MovieIntent,
+    MovieIntentPatch,
+    PersonConstraint,
+    TurnKind,
+)
 from movie_agent.models.movies import RecommendationBatch
 from movie_agent.services.omdb import OmdbClient
 from movie_agent.services.persistence import (
@@ -37,6 +51,7 @@ from movie_agent.services.persistence import (
     PersistenceClient,
     PersistenceError,
     RunLimits,
+    RunRecord,
     RunStatus,
     TerminalRunStatus,
 )
@@ -48,6 +63,48 @@ _REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 MAX_RUN_SECONDS = 90
 RUN_LEASE_SECONDS = 120
 MAX_SEEN_IDS = 200
+MAX_HISTORY_TURNS = 6
+MAX_HISTORY_EVENTS = 24
+MAX_HISTORY_CHARS = 32_000
+FILTER_EDIT_FIELDS = frozenset(
+    {
+        "genres",
+        "moods",
+        "people",
+        "release_year",
+        "release_year_min",
+        "release_year_max",
+        "original_language",
+        "runtime_max_minutes",
+        "tmdb_rating_min",
+        "country",
+        "requested_count",
+    }
+)
+
+
+class FilterEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field: str = Field(min_length=1, max_length=40)
+    operation: Literal["set", "remove", "clear"]
+    value: str | int | float | None = None
+
+    @field_validator("field")
+    @classmethod
+    def validate_field(cls, value: str) -> str:
+        normalized = value.strip().casefold()
+        if normalized not in FILTER_EDIT_FIELDS:
+            raise ValueError("filter_edit field is not supported")
+        return normalized
+
+    @model_validator(mode="after")
+    def value_matches_operation(self) -> FilterEdit:
+        if self.operation in {"set", "remove"} and self.value is None:
+            raise ValueError(f"filter_edit {self.operation} requires a value")
+        if self.operation == "clear" and self.value is not None:
+            raise ValueError("filter_edit clear does not accept a value")
+        return self
 
 
 class RecommendationRunRequest(BaseModel):
@@ -57,6 +114,12 @@ class RecommendationRunRequest(BaseModel):
     client_request_id: str = Field(min_length=1, max_length=128)
     conversation_id: UUID | None = None
     expected_version: int | None = Field(default=None, ge=1)
+    clarification_choice_id: str | None = Field(
+        default=None,
+        pattern=r"^[a-z]+:[0-9]+$",
+        max_length=64,
+    )
+    filter_edit: FilterEdit | None = None
 
     @field_validator("client_request_id")
     @classmethod
@@ -85,6 +148,17 @@ class AvailabilityRefreshRequest(BaseModel):
         return value.strip().upper() if isinstance(value, str) else value
 
 
+class ConversationTurn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: UUID
+    user_message: str = Field(min_length=1, max_length=1200)
+    status: str = Field(min_length=1, max_length=40)
+    response: dict[str, Any] | None = None
+    answer: str | None = Field(default=None, max_length=1200)
+    events: list[TraceEvent] = Field(default_factory=list, max_length=MAX_HISTORY_EVENTS)
+
+
 class ConversationSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -93,8 +167,31 @@ class ConversationSnapshot(BaseModel):
     intent: MovieIntent
     result: RecommendationBatch | None = None
     clarification: str | None = Field(default=None, max_length=240)
+    clarification_options: list[ClarificationOption] = Field(default_factory=list, max_length=4)
+    turns: list[ConversationTurn] = Field(default_factory=list, max_length=MAX_HISTORY_TURNS)
     issues: list[AssemblyIssue] = Field(default_factory=list)
     provider_lookups: list[ProviderLookup] = Field(default_factory=list)
+
+
+class CapabilitiesResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    history: bool = True
+    structured_clarification: bool = True
+    filter_edit: bool = True
+    alternatives: bool = True
+    run_status: bool = True
+
+
+class RunStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: UUID
+    conversation_id: UUID
+    status: str = Field(min_length=1, max_length=40)
+    version: int = Field(ge=1)
+    events: list[TraceEvent] = Field(default_factory=list)
+    response: dict[str, Any] | None = None
 
 
 def _persistence(request: Request) -> PersistenceClient:
@@ -122,6 +219,39 @@ def _omdb(request: Request) -> OmdbClient | None:
     return value if isinstance(value, OmdbClient) else None
 
 
+@router.get("/capabilities", response_model=CapabilitiesResponse)
+async def get_capabilities(
+    session_id: Annotated[UUID, Depends(require_session_id)],
+) -> CapabilitiesResponse:
+    del session_id
+    return CapabilitiesResponse()
+
+
+@router.get("/runs/{run_id}", response_model=RunStatusResponse)
+async def get_run_status(
+    run_id: UUID,
+    request: Request,
+    session_id: Annotated[UUID, Depends(require_session_id)],
+) -> RunStatusResponse:
+    persistence = _persistence(request)
+    try:
+        run = await persistence.get_run(session_id, run_id)
+    except PersistenceError as error:
+        raise _persistence_http_error(error) from error
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    events = _events_from_run(run)
+    response = run.result if isinstance(run.result, dict) else None
+    return RunStatusResponse(
+        run_id=run.run_id,
+        conversation_id=run.conversation_id,
+        status=run.status.value,
+        version=run.conversation_version,
+        events=events,
+        response=response,
+    )
+
+
 @router.get("/conversations/{conversation_id}", response_model=ConversationSnapshot)
 async def get_conversation_snapshot(
     conversation_id: UUID,
@@ -135,11 +265,21 @@ async def get_conversation_snapshot(
         raise _persistence_http_error(error) from error
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    return _snapshot_from_conversation(
+    snapshot = _snapshot_from_conversation(
         conversation.conversation_id,
         conversation.version,
         conversation.state,
     )
+    try:
+        runs = await persistence.list_conversation_runs(
+            session_id,
+            conversation_id,
+            limit=MAX_HISTORY_TURNS,
+        )
+        snapshot.turns = _snapshot_turns_from_runs(runs)
+    except PersistenceError as error:
+        raise _persistence_http_error(error) from error
+    return snapshot
 
 
 @router.patch(
@@ -170,7 +310,10 @@ async def refresh_conversation_availability(
         issues = [
             AssemblyIssue.model_validate(item) for item in conversation.state.get("last_issues", [])
         ]
-        clarification = _stored_clarification(conversation.state)
+        pending = _stored_pending(conversation.state)
+        clarification = pending.text if pending is not None else None
+        clarification_options = pending.public_options() if pending is not None else []
+        turns = _snapshot_turns(conversation.state)
     except Exception:
         raise HTTPException(
             status_code=503, detail="Stored conversation data is malformed"
@@ -210,6 +353,8 @@ async def refresh_conversation_availability(
         intent=updated_intent,
         result=result,
         clarification=clarification,
+        clarification_options=clarification_options,
+        turns=turns,
         issues=issues,
         provider_lookups=provider_lookups,
     )
@@ -227,6 +372,10 @@ async def stream_recommendations(
     prior_state: dict[str, Any] = {}
     if _REQUEST_ID.fullmatch(body.client_request_id) is None:
         raise HTTPException(status_code=422, detail="Invalid client_request_id")
+    if body.clarification_choice_id is not None and body.conversation_id is None:
+        raise HTTPException(status_code=422, detail="Clarification choice requires a conversation")
+    if body.filter_edit is not None and body.conversation_id is None:
+        raise HTTPException(status_code=422, detail="Filter edit requires a conversation")
 
     try:
         if body.conversation_id is None:
@@ -254,12 +403,27 @@ async def stream_recommendations(
         raise _persistence_http_error(error) from error
 
     try:
+        deterministic_intent, direct_reference = _build_deterministic_turn(
+            body,
+            prior_intent,
+            prior_state,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
+
+    claim_input: dict[str, Any] = {"message": body.message.strip()}
+    if body.clarification_choice_id is not None:
+        claim_input["clarification_choice_id"] = body.clarification_choice_id
+    if body.filter_edit is not None:
+        claim_input["filter_edit"] = body.filter_edit.model_dump(mode="json")
+
+    try:
         claimed = await persistence.claim_run(
             session_id,
             conversation_id,
             body.client_request_id,
             version,
-            {"message": body.message.strip()},
+            claim_input,
             RunLimits(lease_seconds=RUN_LEASE_SECONDS),
         )
     except PersistenceError as error:
@@ -318,60 +482,88 @@ async def stream_recommendations(
                 yield emit(
                     TraceStage.PREDICT,
                     TraceEventType.DECISION,
-                    "Interpreting the latest request against saved preferences",
+                    (
+                        "Applying the selected clarification or filter edit"
+                        if deterministic_intent is not None
+                        else "Interpreting the latest request against saved preferences"
+                    ),
                 )
-                patch = await extract_intent_patch(body.message, prior_intent)
                 similar_reference: dict[str, Any] | None = None
-                title_clarification: str | None = None
-                if patch.turn_kind is not TurnKind.INSPECT_RESULTS:
-                    failure_stage = "tmdb_title_lookup"
-                    if patch.similar_to_title is not None:
-                        yield emit(
-                            TraceStage.ACT,
-                            TraceEventType.TOOL_STARTED,
-                            "Checking the named reference title in TMDB",
-                            metadata={"provider": "tmdb", "operation": "search_movies"},
-                        )
-                        similar_reference, title_clarification = await _resolve_similar_reference(
-                            tmdb,
-                            patch.similar_to_title,
-                            patch.similar_to_year,
-                        )
-                        yield emit(
-                            TraceStage.ACT,
-                            TraceEventType.TOOL_FINISHED,
-                            (
-                                "Reference title was resolved"
-                                if similar_reference
-                                else "Reference title needs clarification"
-                            ),
-                            metadata={"provider": "tmdb", "operation": "search_movies"},
-                        )
-                    elif patch.turn_kind is not TurnKind.NEW_SEARCH:
-                        similar_reference = _saved_similar_reference(prior_state)
-                else:
-                    similar_reference = _saved_similar_reference(prior_state)
-                failure_stage = "intent_merge"
-                merge_base = (
-                    MovieIntent() if patch.turn_kind is TurnKind.NEW_SEARCH else prior_intent
-                )
-                merged = merge_intent(merge_base, patch, seen_tmdb_ids=current_seen_ids)
-                current_intent = merged.intent
-                clarification: str | None
-                if patch.turn_kind is TurnKind.INSPECT_RESULTS:
+                title_clarification: PendingClarification | None = None
+                excluded_tmdb_ids: Sequence[int] = ()
+                if deterministic_intent is not None:
+                    turn_kind = TurnKind.REFINE
+                    current_intent = deterministic_intent
+                    similar_reference = direct_reference or _saved_similar_reference(prior_state)
                     clarification = None
                 else:
-                    clarification = merged.clarification or title_clarification
+                    patch = await extract_intent_patch(body.message, prior_intent)
+                    turn_kind = patch.turn_kind
+                    if turn_kind is not TurnKind.INSPECT_RESULTS:
+                        failure_stage = "tmdb_title_lookup"
+                        if patch.similar_to_title is not None:
+                            yield emit(
+                                TraceStage.ACT,
+                                TraceEventType.TOOL_STARTED,
+                                "Checking the named reference title in TMDB",
+                                metadata={"provider": "tmdb", "operation": "search_movies"},
+                            )
+                            (
+                                similar_reference,
+                                title_clarification,
+                            ) = await _resolve_similar_reference_turn(
+                                tmdb,
+                                patch.similar_to_title,
+                                patch.similar_to_year,
+                            )
+                            yield emit(
+                                TraceStage.ACT,
+                                TraceEventType.TOOL_FINISHED,
+                                (
+                                    "Reference title was resolved"
+                                    if similar_reference
+                                    else "Reference title needs clarification"
+                                ),
+                                metadata={"provider": "tmdb", "operation": "search_movies"},
+                            )
+                        elif turn_kind is not TurnKind.NEW_SEARCH:
+                            similar_reference = _saved_similar_reference(prior_state)
+                    else:
+                        similar_reference = _saved_similar_reference(prior_state)
+                    failure_stage = "intent_merge"
+                    merge_base = MovieIntent() if turn_kind is TurnKind.NEW_SEARCH else prior_intent
+                    merged = merge_intent(merge_base, patch, seen_tmdb_ids=current_seen_ids)
+                    current_intent = merged.intent
+                    excluded_tmdb_ids = (
+                        merged.excluded_tmdb_ids if turn_kind is TurnKind.ANOTHER_SET else ()
+                    )
+                    clarification = (
+                        None if turn_kind is TurnKind.INSPECT_RESULTS else merged.clarification
+                    )
 
-                current_state = {
-                    **({} if patch.turn_kind is TurnKind.NEW_SEARCH else prior_state),
-                    "intent": current_intent.model_dump(mode="json"),
-                    "seen_tmdb_ids": (
-                        []
-                        if patch.turn_kind is TurnKind.NEW_SEARCH
-                        else current_seen_ids[-MAX_SEEN_IDS:]
-                    ),
-                }
+                pending = title_clarification
+                if clarification is not None and pending is None:
+                    pending = PendingClarification(text=clarification)
+                elif clarification is not None and pending is not None:
+                    pending = PendingClarification(
+                        text=clarification[:240],
+                        options=pending.options,
+                    )
+
+                if turn_kind is TurnKind.NEW_SEARCH:
+                    current_state = {
+                        "intent": current_intent.model_dump(mode="json"),
+                        "seen_tmdb_ids": [],
+                        "history": _stored_history(prior_state),
+                    }
+                else:
+                    current_state = {
+                        **prior_state,
+                        "intent": current_intent.model_dump(mode="json"),
+                        "seen_tmdb_ids": (
+                            current_seen_ids[-MAX_SEEN_IDS:] if current_seen_ids else []
+                        ),
+                    }
                 if similar_reference is not None:
                     current_state["similar_reference"] = similar_reference
                 else:
@@ -385,14 +577,14 @@ async def stream_recommendations(
                         "people_count": len(current_intent.people),
                         "requested_count": current_intent.requested_count,
                         "country": current_intent.country,
-                        "turn_kind": patch.turn_kind.value,
+                        "turn_kind": turn_kind.value,
                     },
                     data={"intent": current_intent.model_dump(mode="json")},
                 )
 
                 result_data: dict[str, Any]
-                if patch.turn_kind is TurnKind.INSPECT_RESULTS:
-                    current_state.pop("last_clarification", None)
+                if turn_kind is TurnKind.INSPECT_RESULTS:
+                    _clear_pending_clarification(current_state)
                     answer = _answer_from_saved_results(
                         body.message,
                         prior_state.get("last_result"),
@@ -406,6 +598,14 @@ async def stream_recommendations(
                         data=result_data,
                     )
                     failure_stage = "run_finalization"
+                    current_state = _record_turn(
+                        current_state,
+                        run_id=claimed.run_id,
+                        user_message=body.message,
+                        status=TerminalRunStatus.COMPLETED,
+                        result_data=result_data,
+                        trace=trace,
+                    )
                     await _finalize(
                         persistence,
                         session_id,
@@ -418,24 +618,35 @@ async def stream_recommendations(
                     yield terminal
                     return
 
-                if clarification:
-                    current_state["last_clarification"] = clarification
+                if pending is not None:
+                    _set_pending_clarification(current_state, pending)
                     result_data = {
                         "intent": current_intent.model_dump(mode="json"),
                         "recommendations": [],
                         "requested_count": current_intent.requested_count,
                         "shortfall_reason": None,
-                        "clarification": clarification,
+                        "clarification": pending.text,
+                        "clarification_options": [
+                            option.model_dump(mode="json") for option in pending.public_options()
+                        ],
                         "issues": [],
                         "provider_lookups": [],
                     }
                     terminal = emit(
                         TraceStage.COMPLETE,
                         TraceEventType.NEEDS_CLARIFICATION,
-                        clarification,
+                        pending.text,
                         data=result_data,
                     )
                     failure_stage = "run_finalization"
+                    current_state = _record_turn(
+                        current_state,
+                        run_id=claimed.run_id,
+                        user_message=body.message,
+                        status=TerminalRunStatus.NEEDS_CLARIFICATION,
+                        result_data=result_data,
+                        trace=trace,
+                    )
                     await _finalize(
                         persistence,
                         session_id,
@@ -469,9 +680,7 @@ async def stream_recommendations(
                     similar_to_title=(
                         similar_reference["title"] if similar_reference is not None else None
                     ),
-                    excluded_tmdb_ids=(
-                        merged.excluded_tmdb_ids if patch.turn_kind is TurnKind.ANOTHER_SET else ()
-                    ),
+                    excluded_tmdb_ids=excluded_tmdb_ids,
                 )
                 yield emit(
                     TraceStage.ACT,
@@ -483,18 +692,66 @@ async def stream_recommendations(
                     },
                 )
 
-                new_ids = [item.movie.tmdb_id for item in assembly.batch.recommendations]
-                if patch.turn_kind is TurnKind.ANOTHER_SET:
-                    current_seen_ids = list(dict.fromkeys([*current_seen_ids, *new_ids]))[
-                        -MAX_SEEN_IDS:
+                if assembly.clarification is not None:
+                    _set_pending_clarification(current_state, assembly.clarification)
+                    current_state["last_issues"] = [
+                        item.model_dump(mode="json") for item in assembly.issues
                     ]
-                elif patch.turn_kind is TurnKind.NEW_SEARCH:
+                    result_data = {
+                        "intent": current_intent.model_dump(mode="json"),
+                        "recommendations": [],
+                        "requested_count": current_intent.requested_count,
+                        "shortfall_reason": None,
+                        "clarification": assembly.clarification.text,
+                        "clarification_options": [
+                            option.model_dump(mode="json")
+                            for option in assembly.clarification.public_options()
+                        ],
+                        "issues": [item.model_dump(mode="json") for item in assembly.issues],
+                        "provider_lookups": [],
+                    }
+                    terminal = emit(
+                        TraceStage.COMPLETE,
+                        TraceEventType.NEEDS_CLARIFICATION,
+                        assembly.clarification.text,
+                        data=result_data,
+                    )
+                    failure_stage = "run_finalization"
+                    current_state = _record_turn(
+                        current_state,
+                        run_id=claimed.run_id,
+                        user_message=body.message,
+                        status=TerminalRunStatus.NEEDS_CLARIFICATION,
+                        result_data=result_data,
+                        trace=trace,
+                    )
+                    await _finalize(
+                        persistence,
+                        session_id,
+                        claimed,
+                        TerminalRunStatus.NEEDS_CLARIFICATION,
+                        state=current_state,
+                        result=result_data,
+                        trace=trace,
+                    )
+                    yield terminal
+                    return
+
+                new_ids = [item.movie.tmdb_id for item in assembly.batch.recommendations]
+                if turn_kind is TurnKind.NEW_SEARCH:
                     current_seen_ids = new_ids
                 else:
                     current_seen_ids = list(dict.fromkeys([*current_seen_ids, *new_ids]))[
                         -MAX_SEEN_IDS:
                     ]
                 current_state = {
+                    **(
+                        {
+                            "history": _stored_history(prior_state),
+                        }
+                        if turn_kind is TurnKind.NEW_SEARCH
+                        else prior_state
+                    ),
                     "intent": current_intent.model_dump(mode="json"),
                     "seen_tmdb_ids": current_seen_ids,
                     "last_result": assembly.batch.model_dump(mode="json"),
@@ -504,7 +761,7 @@ async def stream_recommendations(
                         item.model_dump(mode="json") for item in assembly.provider_lookups
                     ],
                 }
-                current_state.pop("last_clarification", None)
+                _clear_pending_clarification(current_state)
                 result_data = {
                     "intent": current_intent.model_dump(mode="json"),
                     "recommendations": [
@@ -512,6 +769,9 @@ async def stream_recommendations(
                     ],
                     "requested_count": assembly.batch.requested_count,
                     "shortfall_reason": assembly.batch.shortfall_reason,
+                    "alternatives": [
+                        item.model_dump(mode="json") for item in assembly.batch.alternatives
+                    ],
                     "issues": [item.model_dump(mode="json") for item in assembly.issues],
                     "provider_lookups": [
                         item.model_dump(mode="json") for item in assembly.provider_lookups
@@ -523,6 +783,7 @@ async def stream_recommendations(
                     f"Prepared {len(assembly.batch.recommendations)} grounded recommendations",
                     metadata={
                         "result_count": len(assembly.batch.recommendations),
+                        "alternative_count": len(assembly.batch.alternatives),
                         "requested_count": assembly.batch.requested_count,
                         "has_shortfall": assembly.batch.shortfall_reason is not None,
                     },
@@ -535,6 +796,14 @@ async def stream_recommendations(
                     metadata={"conversation_id": str(conversation_id)},
                 )
                 failure_stage = "run_finalization"
+                current_state = _record_turn(
+                    current_state,
+                    run_id=claimed.run_id,
+                    user_message=body.message,
+                    status=TerminalRunStatus.COMPLETED,
+                    result_data=result_data,
+                    trace=trace,
+                )
                 await _finalize(
                     persistence,
                     session_id,
@@ -557,10 +826,18 @@ async def stream_recommendations(
         except Exception as error:
             code = _failure_code(error)
             _log_run_failure(failure_stage, claimed.run_id, error, code)
+            failure_result: dict[str, Any] = {"error_code": code}
+            retry_after = _retry_after_seconds(error) if code == "model_rate_limited" else None
+            if retry_after is not None:
+                failure_result["retry_after_seconds"] = retry_after
             terminal = emit(
                 TraceStage.COMPLETE,
                 TraceEventType.FAILED,
-                "The recommendation run could not be completed",
+                (
+                    "The model provider is rate limiting requests. Try again shortly."
+                    if code == "model_rate_limited"
+                    else "The recommendation run could not be completed"
+                ),
                 metadata=_failure_metadata(failure_stage, error, code),
             )
             with contextlib.suppress(PersistenceError):
@@ -570,7 +847,7 @@ async def stream_recommendations(
                     claimed,
                     TerminalRunStatus.FAILED,
                     error_code=code,
-                    result={"error_code": code},
+                    result=failure_result,
                     trace=trace,
                 )
             yield terminal
@@ -698,15 +975,454 @@ def _persistence_http_error(error: PersistenceError) -> HTTPException:
     return HTTPException(status_code=503, detail="Conversation storage is unavailable")
 
 
-async def _resolve_similar_reference(
+def _build_deterministic_turn(
+    body: RecommendationRunRequest,
+    prior_intent: MovieIntent,
+    prior_state: dict[str, Any],
+) -> tuple[MovieIntent | None, dict[str, Any] | None]:
+    """Apply an owned clarification choice and/or a deterministic filter edit."""
+    if body.clarification_choice_id is None and body.filter_edit is None:
+        return None, None
+
+    intent = prior_intent
+    reference: dict[str, Any] | None = None
+    if body.clarification_choice_id is not None:
+        pending = _stored_pending(prior_state)
+        if pending is None:
+            raise ValueError("There is no pending clarification for this conversation")
+        option = next(
+            (item for item in pending.options if item.choice_id == body.clarification_choice_id),
+            None,
+        )
+        if option is None:
+            raise ValueError("That clarification choice is no longer available")
+        if option.kind == "title":
+            if option.title is None:
+                raise ValueError("That clarification choice is no longer available")
+            reference = {
+                "tmdb_id": option.tmdb_id,
+                "title": option.title,
+                "year": option.year,
+            }
+        elif option.kind == "person":
+            selected = PersonConstraint(
+                name=option.person_name or option.label,
+                role=option.person_role,
+                tmdb_id=option.tmdb_id,
+            )
+            people: list[PersonConstraint] = []
+            replaced = False
+            for person in intent.people:
+                if _person_choice_replaces(person, option):
+                    if not replaced:
+                        people.append(selected)
+                        replaced = True
+                    continue
+                people.append(person)
+            if not replaced:
+                people.append(selected)
+            intent = intent.model_copy(update={"people": people})
+        else:
+            raise ValueError("That clarification choice is not supported")
+
+    if body.filter_edit is not None:
+        intent = _apply_filter_edit(intent, body.filter_edit)
+
+    # Preserve the same mood/genre correction used by model-authored edits.
+    normalized = merge_intent(
+        intent,
+        MovieIntentPatch(turn_kind=TurnKind.REFINE),
+    ).intent
+    return normalized, reference
+
+
+def _person_choice_replaces(
+    person: PersonConstraint,
+    option: StoredClarificationOption,
+) -> bool:
+    if option.replace_name is not None:
+        wanted = " ".join(re.findall(r"[a-z0-9]+", option.replace_name.casefold()))
+        current = " ".join(re.findall(r"[a-z0-9]+", person.name.casefold()))
+        if wanted and wanted != current:
+            return False
+    if option.replace_role is not None and person.role is not None:
+        return person.role.casefold() == option.replace_role.casefold()
+    return True
+
+
+def _apply_filter_edit(intent: MovieIntent, edit: FilterEdit) -> MovieIntent:
+    field = edit.field
+    operation = edit.operation
+    updates: dict[str, Any] = {}
+
+    if field in {"genres", "moods"}:
+        current = getattr(intent, field)
+        if operation == "clear":
+            updates[field] = []
+        else:
+            value = _filter_text(edit.value, field)
+            if operation == "set":
+                if field == "genres" and not is_supported_tmdb_genre(value):
+                    raise ValueError(
+                        "TMDB does not support that genre; choose a catalog genre "
+                        "or edit it as a mood"
+                    )
+                updates[field] = [value]
+            else:
+                updates[field] = [item for item in current if item.casefold() != value.casefold()]
+    elif field == "people":
+        if operation == "clear":
+            updates["people"] = []
+        elif operation == "set":
+            name = _filter_text(edit.value, field)
+            updates["people"] = [PersonConstraint(name=name)]
+        else:
+            name = _filter_text(edit.value, field)
+            updates["people"] = [
+                person for person in intent.people if person.name.casefold() != name.casefold()
+            ]
+    elif field == "release_year":
+        if operation == "clear":
+            updates["release_year_min"] = None
+            updates["release_year_max"] = None
+        elif operation == "set":
+            year = _filter_int(edit.value, field, minimum=1888, maximum=2200)
+            updates["release_year_min"] = year
+            updates["release_year_max"] = year
+        else:
+            raise ValueError("filter_edit release_year supports set or clear")
+    elif field in {"release_year_min", "release_year_max"}:
+        if operation == "clear":
+            updates[field] = None
+        elif operation == "set":
+            updates[field] = _filter_int(edit.value, field, minimum=1888, maximum=2200)
+        else:
+            raise ValueError(f"filter_edit {field} supports set or clear")
+    elif field == "original_language":
+        if operation == "clear":
+            updates[field] = None
+        elif operation == "set":
+            value = _filter_text(edit.value, field).casefold()
+            if re.fullmatch(r"[a-z]{2}", value) is None:
+                raise ValueError("filter_edit original_language must be a two-letter code")
+            updates[field] = value
+        else:
+            raise ValueError("filter_edit original_language supports set or clear")
+    elif field == "runtime_max_minutes":
+        if operation == "clear":
+            updates[field] = None
+        elif operation == "set":
+            updates[field] = _filter_int(edit.value, field, minimum=1, maximum=600)
+        else:
+            raise ValueError(f"filter_edit {field} supports set or clear")
+    elif field == "tmdb_rating_min":
+        if operation == "clear":
+            updates[field] = None
+        elif operation == "set":
+            rating = _filter_float(edit.value, field)
+            if not 0 <= rating <= 10:
+                raise ValueError("filter_edit tmdb_rating_min must be between 0 and 10")
+            updates[field] = rating
+        else:
+            raise ValueError(f"filter_edit {field} supports set or clear")
+    elif field == "country":
+        if operation != "set":
+            raise ValueError("filter_edit country supports set only")
+        value = _filter_text(edit.value, field).upper()
+        if re.fullmatch(r"[A-Z]{2}", value) is None:
+            raise ValueError("filter_edit country must be a two-letter code")
+        updates[field] = value
+    elif field == "requested_count":
+        if operation != "set":
+            raise ValueError("filter_edit requested_count supports set only")
+        updates[field] = _filter_int(edit.value, field, minimum=1, maximum=10)
+    else:
+        raise ValueError("filter_edit field is not supported")
+
+    try:
+        return MovieIntent.model_validate({**intent.model_dump(), **updates})
+    except Exception as error:
+        raise ValueError("filter_edit produces an invalid filter state") from error
+
+
+def _filter_text(value: str | int | float | None, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"filter_edit {field} requires a non-empty text value")
+    return " ".join(value.split())
+
+
+def _filter_int(
+    value: str | int | float | None,
+    field: str,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"filter_edit {field} requires a whole number")
+    if isinstance(value, str):
+        if re.fullmatch(r"\s*[+-]?\d+\s*", value) is None:
+            raise ValueError(f"filter_edit {field} requires a whole number")
+        number = int(value)
+    elif isinstance(value, int):
+        number = value
+    elif isinstance(value, float) and value.is_integer():
+        number = int(value)
+    else:
+        raise ValueError(f"filter_edit {field} requires a whole number")
+    if not minimum <= number <= maximum:
+        raise ValueError(f"filter_edit {field} is outside the allowed range")
+    return number
+
+
+def _filter_float(value: str | int | float | None, field: str) -> float:
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f"filter_edit {field} requires a number")
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            raise ValueError(f"filter_edit {field} requires a number") from None
+    if isinstance(value, (int, float)):
+        return float(value)
+    raise ValueError(f"filter_edit {field} requires a number")
+
+
+def _stored_pending(state: dict[str, Any]) -> PendingClarification | None:
+    text = _stored_clarification(state)
+    if text is None:
+        return None
+    raw_options = state.get("last_clarification_options")
+    if raw_options is None:
+        return PendingClarification(text=text)
+    if not isinstance(raw_options, list):
+        raise ValueError("Stored clarification options are malformed")
+    try:
+        options = [StoredClarificationOption.model_validate(item) for item in raw_options]
+        return PendingClarification(text=text, options=options if len(options) >= 2 else [])
+    except Exception as error:
+        raise ValueError("Stored clarification options are malformed") from error
+
+
+def _set_pending_clarification(
+    state: dict[str, Any],
+    pending: PendingClarification,
+) -> None:
+    state["last_clarification"] = pending.text
+    if 2 <= len(pending.options) <= 4:
+        state["last_clarification_options"] = [
+            option.model_dump(mode="json") for option in pending.options
+        ]
+    else:
+        state.pop("last_clarification_options", None)
+
+
+def _clear_pending_clarification(state: dict[str, Any]) -> None:
+    state.pop("last_clarification", None)
+    state.pop("last_clarification_options", None)
+
+
+def _stored_history(state: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = state.get("history")
+    if not isinstance(raw, list):
+        return []
+    return [dict(item) for item in raw if isinstance(item, dict)][-MAX_HISTORY_TURNS:]
+
+
+def _record_turn(
+    state: dict[str, Any],
+    *,
+    run_id: UUID,
+    user_message: str,
+    status: TerminalRunStatus,
+    result_data: dict[str, Any],
+    trace: list[dict[str, Any]],
+) -> dict[str, Any]:
+    response: dict[str, Any] | None = None
+    answer: str | None = None
+    raw_answer = result_data.get("answer")
+    if isinstance(raw_answer, str) and "recommendations" not in result_data:
+        answer = raw_answer[:1200]
+    else:
+        response = json.loads(json.dumps(result_data))
+    turn: dict[str, Any] = {
+        "run_id": str(run_id),
+        "user_message": user_message.strip()[:1200],
+        "status": status.value,
+        "response": response,
+        "answer": answer,
+        "events": _stored_events(trace),
+    }
+    return {**state, "history": _bounded_history([*_stored_history(state), turn])}
+
+
+def _stored_events(trace: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for item in trace[-MAX_HISTORY_EVENTS:]:
+        event = dict(item)
+        event["data"] = None
+        events.append(event)
+    return events
+
+
+def _bounded_history(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    bounded = [dict(item) for item in turns if isinstance(item, dict)][-MAX_HISTORY_TURNS:]
+    for turn in bounded:
+        events = turn.get("events")
+        if isinstance(events, list):
+            turn["events"] = [
+                {**dict(event), "data": None}
+                for event in events[-MAX_HISTORY_EVENTS:]
+                if isinstance(event, dict)
+            ]
+        else:
+            turn["events"] = []
+    while len(bounded) > 1 and _history_size(bounded) > MAX_HISTORY_CHARS:
+        bounded.pop(0)
+    if bounded and _history_size(bounded) > MAX_HISTORY_CHARS:
+        bounded[-1]["events"] = []
+        response = bounded[-1].get("response")
+        if isinstance(response, dict):
+            trimmed = dict(response)
+            recommendations = trimmed.get("recommendations")
+            if isinstance(recommendations, list):
+                trimmed["recommendations"] = recommendations[:3]
+            alternatives = trimmed.get("alternatives")
+            if isinstance(alternatives, list):
+                trimmed["alternatives"] = alternatives[:1]
+            bounded[-1]["response"] = trimmed
+        if _history_size(bounded) > MAX_HISTORY_CHARS:
+            bounded[-1]["response"] = None
+    return bounded
+
+
+def _history_size(turns: list[dict[str, Any]]) -> int:
+    return len(json.dumps(turns, separators=(",", ":"), default=str))
+
+
+def _snapshot_turns(state: dict[str, Any]) -> list[ConversationTurn]:
+    turns: list[ConversationTurn] = []
+    for item in _stored_history(state):
+        try:
+            turn = ConversationTurn.model_validate(item)
+        except Exception:
+            continue
+        if len(turn.events) > MAX_HISTORY_EVENTS:
+            turn = turn.model_copy(update={"events": turn.events[-MAX_HISTORY_EVENTS:]})
+        turns.append(turn)
+    return turns
+
+
+def _snapshot_turns_from_runs(runs: list[RunRecord]) -> list[ConversationTurn]:
+    turns: list[ConversationTurn] = []
+    for run in runs[-MAX_HISTORY_TURNS:]:
+        message = run.input.get("message")
+        if not isinstance(message, str) or not message.strip():
+            continue
+        result = run.result if isinstance(run.result, dict) else None
+        answer = result.get("answer") if result is not None else None
+        if not isinstance(answer, str):
+            answer = None
+        response = result if result is not None and answer is None else None
+        turns.append(
+            ConversationTurn(
+                run_id=run.run_id,
+                user_message=message.strip()[:1200],
+                status=run.status.value,
+                response=response,
+                answer=answer[:1200] if answer is not None else None,
+                events=_events_from_run(run)[-MAX_HISTORY_EVENTS:],
+            )
+        )
+    return turns
+
+
+def _events_from_run(run: RunRecord) -> list[TraceEvent]:
+    raw_trace = run.trace if isinstance(run.trace, list) else []
+    try:
+        events = [TraceEvent.model_validate(item) for item in raw_trace]
+    except Exception:
+        raise HTTPException(status_code=503, detail="Stored run trace is malformed") from None
+
+    expected = {
+        RunStatus.COMPLETED: (TraceEventType.COMPLETED, "Recommendation run completed"),
+        RunStatus.FAILED: (
+            TraceEventType.FAILED,
+            "The recommendation run could not be completed",
+        ),
+        RunStatus.CANCELLED: (
+            TraceEventType.CANCELLED,
+            "The recommendation run was cancelled",
+        ),
+        RunStatus.NEEDS_CLARIFICATION: (
+            TraceEventType.NEEDS_CLARIFICATION,
+            "More information is needed before recommending movies",
+        ),
+    }.get(run.status)
+    if expected is None:
+        return events
+    event_type, summary = expected
+    if events and events[-1].type is event_type:
+        return events
+    sequence = max((event.sequence for event in events), default=0) + 1
+    if run.status is RunStatus.NEEDS_CLARIFICATION:
+        clarification = run.result.get("clarification") if isinstance(run.result, dict) else None
+        if isinstance(clarification, str) and clarification.strip():
+            summary = clarification[:240]
+    metadata: dict[str, str | int | float | bool | None] = {}
+    if run.error_code:
+        metadata["error_code"] = run.error_code
+    events.append(
+        TraceEvent(
+            run_id=run.run_id,
+            sequence=sequence,
+            stage=TraceStage.COMPLETE,
+            type=event_type,
+            origin=EventOrigin.APPLICATION,
+            summary=summary,
+            metadata=metadata,
+        )
+    )
+    return events
+
+
+def _retry_after_seconds(error: Exception) -> int | None:
+    retry_after = getattr(error, "retry_after", None)
+    if (
+        isinstance(retry_after, (int, float))
+        and not isinstance(retry_after, bool)
+        and math.isfinite(retry_after)
+        and retry_after > 0
+    ):
+        return min(max(math.ceil(retry_after), 1), 3600)
+    text = str(error).casefold()
+    match = re.search(
+        r"(?:retry[-_ ]after|try again in|retry in)[^0-9]{0,16}"
+        r"(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|m)\b",
+        text,
+    )
+    if match is None:
+        return None
+    value = float(match.group(1))
+    if match.group(2).startswith("m"):
+        value *= 60
+    seconds = math.ceil(value)
+    if seconds < 1:
+        return 1
+    return min(seconds, 3600)
+
+
+async def _resolve_similar_reference_turn(
     client: TmdbClient,
     title: str,
     year: int | None,
-) -> tuple[dict[str, Any] | None, str | None]:
+) -> tuple[dict[str, Any] | None, PendingClarification | None]:
     try:
         page = await client.search_movies(title, year=year)
     except (TmdbError, ValueError):
-        return None, "I couldn't verify that reference title with TMDB. Please try again."
+        return None, PendingClarification(
+            text="I couldn't verify that reference title with TMDB. Please try again."
+        )
 
     wanted = _normalize_title(title)
     exact = [
@@ -729,8 +1445,10 @@ async def _resolve_similar_reference(
 
     choices = exact or page.results[:4]
     if not choices:
-        return None, (
-            f"I couldn't find {title!r} in TMDB. Try another title or include its release year."
+        return None, PendingClarification(
+            text=(
+                f"I couldn't find {title!r} in TMDB. Try another title or include its release year."
+            )[:240]
         )
 
     labels = [
@@ -742,7 +1460,33 @@ async def _resolve_similar_reference(
         + "; ".join(f"{index}. {label}" for index, label in enumerate(labels, start=1))
         + ". Reply with 'like Title (Year)' so I can search TMDB's similar titles."
     )
-    return None, prompt[:240]
+    options: list[StoredClarificationOption] = []
+    for movie in choices:
+        label = f"{movie.title} ({movie.release_year})" if movie.release_year else movie.title
+        detail = "TMDB title match"
+        if movie.release_year is not None:
+            detail += f"; release year {movie.release_year}"
+        options.append(
+            StoredClarificationOption(
+                choice_id=f"title:{movie.tmdb_id}",
+                kind="title",
+                label=label[:120],
+                detail=detail[:240],
+                tmdb_id=movie.tmdb_id,
+                title=movie.title[:200],
+                year=movie.release_year,
+            )
+        )
+    return None, PendingClarification(text=prompt[:240], options=options)
+
+
+async def _resolve_similar_reference(
+    client: TmdbClient,
+    title: str,
+    year: int | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    reference, pending = await _resolve_similar_reference_turn(client, title, year)
+    return reference, pending.text if pending is not None else None
 
 
 def _saved_similar_reference(state: dict[str, Any]) -> dict[str, Any] | None:
@@ -780,7 +1524,10 @@ def _snapshot_from_conversation(
         provider_lookups = [
             ProviderLookup.model_validate(item) for item in state.get("provider_lookups", [])
         ]
-        clarification = _stored_clarification(state)
+        pending = _stored_pending(state)
+        clarification = pending.text if pending is not None else None
+        clarification_options = pending.public_options() if pending is not None else []
+        turns = _snapshot_turns(state)
     except Exception:
         raise HTTPException(
             status_code=503, detail="Stored conversation data is malformed"
@@ -791,6 +1538,8 @@ def _snapshot_from_conversation(
         intent=intent,
         result=result,
         clarification=clarification,
+        clarification_options=clarification_options,
+        turns=turns,
         issues=issues,
         provider_lookups=provider_lookups,
     )
@@ -913,6 +1662,8 @@ def _answer_from_saved_results(
 
 
 def _failure_code(error: Exception) -> str:
+    if isinstance(error, ModelRateLimitError):
+        return "model_rate_limited"
     if isinstance(error, TimeoutError):
         return "run_timeout"
     if isinstance(error, TmdbError):
@@ -924,11 +1675,16 @@ def _failure_metadata(
     stage: str, error: Exception, code: str
 ) -> dict[str, str | int | float | bool | None]:
     """Expose bounded diagnostic labels, never provider messages or user input."""
-    return {
+    metadata: dict[str, str | int | float | bool | None] = {
         "error_code": code,
         "failure_stage": stage,
         "exception_type": type(error).__name__,
     }
+    if code == "model_rate_limited":
+        retry_after = _retry_after_seconds(error)
+        if retry_after is not None:
+            metadata["retry_after_seconds"] = retry_after
+    return metadata
 
 
 def _log_run_failure(stage: str, run_id: UUID, error: Exception, code: str) -> None:
