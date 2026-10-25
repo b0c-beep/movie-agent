@@ -1,5 +1,10 @@
-import { FixtureDemo } from "@/components/fixture-demo";
+import { AccessGate } from "@/components/access-gate";
+import { RecommendationWorkspace } from "@/components/recommendation-workspace";
 
 export default function Home() {
-  return <FixtureDemo />;
+  return (
+    <AccessGate>
+      <RecommendationWorkspace />
+    </AccessGate>
+  );
 }

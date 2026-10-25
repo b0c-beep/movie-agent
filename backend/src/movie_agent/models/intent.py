@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -70,6 +71,26 @@ class MovieIntentPatch(BaseModel):
     moods: StringCollectionPatch | None = None
     release_year_min: int | None = Field(default=None, ge=1888, le=2200)
     release_year_max: int | None = Field(default=None, ge=1888, le=2200)
+    original_language: str | None = Field(default=None, pattern=r"^[a-z]{2}$")
+    runtime_max_minutes: int | None = Field(default=None, ge=1, le=600)
+    people: list[PersonConstraint] | None = Field(default=None, max_length=10)
+    clear_filters: list[
+        Literal["people", "release_year", "original_language", "runtime_max_minutes"]
+    ] = Field(default_factory=list, max_length=4)
     requested_count: int | None = Field(default=None, ge=1, le=10)
     country: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
     clarification: str | None = Field(default=None, max_length=240)
+
+    @model_validator(mode="after")
+    def clear_does_not_conflict_with_updates(self) -> MovieIntentPatch:
+        conflicts = {
+            "people": self.people is not None,
+            "release_year": self.release_year_min is not None or self.release_year_max is not None,
+            "original_language": self.original_language is not None,
+            "runtime_max_minutes": self.runtime_max_minutes is not None,
+        }
+        if any(field in self.clear_filters and changed for field, changed in conflicts.items()):
+            raise ValueError("clear_filters cannot conflict with an update to the same field")
+        if len(set(self.clear_filters)) != len(self.clear_filters):
+            raise ValueError("clear_filters entries must be unique")
+        return self
