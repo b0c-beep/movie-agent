@@ -92,7 +92,7 @@ Development follows one branch and pull request per phase or independently revie
 
 ### Preview deployment proof
 
-Import this repository into two Vercel projects, selecting `backend` and `frontend` as their respective Root Directories. Set `BACKEND_ORIGIN` on the frontend project to the backend deployment origin, without a trailing `/api`. Deploy the backend first, then the frontend. The current fixture endpoint needs no live provider secrets in Vercel. Keep preview environment variables separate from production values; changing a Vercel variable requires a new deployment.
+Import this repository's `main` branch into two Vercel projects, selecting `backend` and `frontend` as their respective Root Directories. The backend exports its app from the standard `backend/main.py` entrypoint; use Vercel's detected FastAPI settings without a custom Build Command or Output Directory. Deploy the backend first, then set `BACKEND_ORIGIN` on the frontend project to the backend deployment origin, without a trailing `/api`. Use the detected Next.js settings for the frontend. The current fixture endpoint needs no live provider secrets in Vercel. Keep preview environment variables separate from production values; changing a Vercel variable requires a new deployment.
 
 The app roots include `.vercelignore` files so a later CLI deployment does not upload local `.env` files. Git imports use the tracked repository and its `.gitignore` rules.
 

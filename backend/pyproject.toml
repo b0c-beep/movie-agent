@@ -25,9 +25,6 @@ package = true
 [tool.hatch.build.targets.wheel]
 packages = ["src/movie_agent"]
 
-[tool.vercel]
-entrypoint = "src.movie_agent.main:app"
-
 [tool.pytest.ini_options]
 addopts = "-q"
 asyncio_mode = "auto"
