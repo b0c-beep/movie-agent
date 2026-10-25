@@ -2,7 +2,7 @@
 
 Movie Agent helps answer the deceptively difficult question: **what should I watch tonight?** It turns conversational requests such as “give me three 1990s dark romances” or “an action movie with Sylvester Stallone” into grounded, country-aware recommendations.
 
-> Status: Phase 2 code is merged and deployed. The Supabase schema, session unlock, and local end-to-end recommendation flow have been verified. Hosted unlock also works, but a hosted recommendation attempt still fails during intent extraction; the production provider configuration or response needs follow-up.
+> Status: Phase 2 code is merged and deployed. The Supabase schema, session unlock, local end-to-end flow, and successful hosted recommendation runs have been verified. Some hosted runs still fail with `recommendation_failed`; investigate the production provider response before calling Phase 2 complete.
 
 ## Planned Product Experience
 
@@ -28,7 +28,7 @@ FastAPI + Pydantic AI
         └── Supabase: anonymous sessions, conversations, runs, usage limits
 ```
 
-The model extracts a typed intent patch; TMDB supplies movie facts; application code verifies hard constraints and assembles the cards. The portable backend's Vercel hosting and fixture-stream transport have been verified. The Phase 2 source is not yet deployed.
+The model extracts a typed intent patch; TMDB supplies movie facts; application code verifies hard constraints and assembles the cards. The portable backend and protected Phase 2 recommendation flow are deployed on Vercel. Production runs have returned grounded recommendation batches, though some attempts still fail.
 
 ## Data Sources
 
@@ -112,12 +112,12 @@ PREVIEW_BASE_URL=https://your-frontend-preview.example npm run test:e2e
 
 `PREVIEW_BASE_URL` skips local server startup. The first browser test stubs the access and recommendation APIs; it checks unlock state, streamed recommendation parsing, and card rendering. The second uses the fixture endpoint through the same-origin `/api` rewrite and checks incremental SSE delivery. Use the actual reachable deployment URL; a protected preview may require a browser session with Vercel access.
 
-The Phase 1 deployment proof passed on October 25, 2026: [frontend](https://movie-agent-frontend-iota.vercel.app/) forwarded `/api/health` to the [backend](https://movie-agent-backend.vercel.app/api/health), and both deployed Playwright fixture tests passed, including incremental SSE delivery and HttpOnly cookie forwarding. The backend's direct fixture stream delivered five ordered events over about 0.31 seconds. Phase 2 production health and passcode unlock now return successfully. A hosted recommendation smoke reached the agent but ended with a generic recommendation failure; the local full API flow completed successfully, so check the Vercel Groq configuration and provider response before calling hosted Phase 2 verified.
+The Phase 1 deployment proof passed on October 25, 2026: [frontend](https://movie-agent-frontend-iota.vercel.app/) forwarded `/api/health` to the [backend](https://movie-agent-backend.vercel.app/api/health), and both deployed Playwright fixture tests passed, including incremental SSE delivery and HttpOnly cookie forwarding. The backend's direct fixture stream delivered five ordered events over about 0.31 seconds. Phase 2 production health and passcode unlock return successfully. Hosted recommendation runs have returned populated batches and an honest shortfall, but some runs ended with `recommendation_failed`; the failure cause remains unresolved.
 
 ## Current Limitations
 
 - The protected passcode/session flow, TMDB adapter, recommendation API and cards are merged to `main` and deployed. The Supabase schema and core persistence RPCs have been exercised against the project database.
-- The Phase 2 browser test uses deterministic API fixtures. Hosted health and unlock pass, but the first hosted recommendation smoke ended with `recommendation_failed`; real hosted recommendation quality and follow-up behavior remain unverified.
+- The Phase 2 browser test uses deterministic API fixtures. Hosted runs have returned recommendations and an honest shortfall, but intermittent `recommendation_failed` outcomes remain under investigation. Live verification of the newly deployed rating threshold is still pending.
 - Availability is provider-level and country-specific; it may be incomplete or stale.
 - Subjective qualities such as “dark” are interpretations, not objective catalog fields.
 - Rotten Tomatoes enrichment is optional and may be absent for individual titles.
