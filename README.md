@@ -2,7 +2,7 @@
 
 Movie Agent helps answer the deceptively difficult question: **what should I watch tonight?** It turns conversational requests such as “give me three 1990s dark romances” or “an action movie with Sylvester Stallone” into grounded, country-aware recommendations.
 
-> Status: Phase 2 is complete. Phase 3 is in progress on `main` at `ee6acfe`, including per-tab conversations, country-only availability refresh, optional OMDb ratings, and answers about saved cards. Both Vercel production deployments are READY at this revision. The Supabase conversation-state migration is applied. A review branch adds grounded TMDB title similarity and accessible clarification/session states; actor disambiguation and full multi-turn transcript/trace history remain future work.
+> Status: Phase 2 is complete. Phase 3 implementation is merged on `main` at `95a88b9`, including per-tab conversations, country-only availability refresh, optional OMDb ratings, answers about saved cards, grounded TMDB title similarity, and accessible clarification/session states. Both Vercel production deployments are READY at this revision, and the backend health endpoint returned HTTP 200 after deployment. The Supabase conversation-state migration is applied. A production recommendation smoke for title similarity remains to be run; actor disambiguation and full multi-turn transcript/trace history remain future work.
 
 ## Planned Product Experience
 
