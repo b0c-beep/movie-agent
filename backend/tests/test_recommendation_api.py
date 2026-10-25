@@ -12,7 +12,12 @@ from movie_agent.api.recommendations import MAX_RUN_SECONDS, RUN_LEASE_SECONDS
 from movie_agent.main import app
 from movie_agent.models.intent import MovieIntentPatch, TurnKind
 from movie_agent.security.sessions import sign_session_token
-from movie_agent.services.persistence import PersistenceClient, PersistenceError
+from movie_agent.services.persistence import (
+    ClaimedRun,
+    PersistenceClient,
+    PersistenceError,
+    RunStatus,
+)
 from movie_agent.services.tmdb import TmdbClient
 
 SIGNING_KEY = "test-session-signing-key-that-is-at-least-32-bytes"
@@ -29,6 +34,23 @@ def test_postgres_usage_limit_error_maps_to_http_429() -> None:
     response = recommendations_api._persistence_http_error(error)
 
     assert response.status_code == 429
+
+
+def test_expired_run_replay_without_trace_returns_a_failed_terminal_event() -> None:
+    claimed = ClaimedRun(
+        run_id=uuid4(),
+        status=RunStatus.FAILED,
+        replayed=True,
+        base_version=1,
+        error_code="lease_expired",
+        created_at=datetime.now(UTC),
+    )
+
+    events = recommendations_api._load_replay_events(claimed)
+
+    assert len(events) == 1
+    assert events[0].type.value == "failed"
+    assert events[0].metadata["error_code"] == "lease_expired"
 
 
 @pytest.mark.asyncio
