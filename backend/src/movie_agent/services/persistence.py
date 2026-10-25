@@ -104,6 +104,14 @@ class CreatedConversation(BaseModel):
     created_at: datetime
 
 
+class UpdatedConversation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    conversation_id: UUID
+    version: int = Field(ge=1)
+    updated_at: datetime
+
+
 class ClaimedRun(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -235,6 +243,28 @@ class PersistenceClient:
             CreatedConversation,
             _single_row(response, "created conversation"),
             "created conversation",
+        )
+
+    async def update_conversation_state(
+        self,
+        session_id: UUID,
+        conversation_id: UUID,
+        expected_version: int,
+        state: Mapping[str, Any],
+    ) -> UpdatedConversation:
+        response = await self._rpc(
+            "update_conversation_state",
+            {
+                "p_session_id": str(session_id),
+                "p_conversation_id": str(conversation_id),
+                "p_expected_version": expected_version,
+                "p_state": dict(state),
+            },
+        )
+        return _validate(
+            UpdatedConversation,
+            _single_row(response, "updated conversation"),
+            "updated conversation",
         )
 
     async def claim_run(

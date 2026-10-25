@@ -197,6 +197,78 @@ async def test_create_conversation_calls_rpc_with_state() -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_conversation_state_calls_rpc_with_expected_version() -> None:
+    requests: list[httpx.Request] = []
+    session_id = uuid4()
+    conversation_id = uuid4()
+    state = {
+        "intent": {"country": "DE"},
+        "last_result": {"recommendations": []},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "conversation_id": str(conversation_id),
+                    "version": 5,
+                    "updated_at": "2026-10-25T12:05:00+00:00",
+                }
+            ],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = PersistenceClient(http, BASE_URL, SECRET)
+        updated = await client.update_conversation_state(
+            session_id,
+            conversation_id,
+            4,
+            state,
+        )
+
+    assert updated.conversation_id == conversation_id
+    assert updated.version == 5
+
+    request = requests[0]
+    assert request.method == "POST"
+    assert request.url.path == "/rest/v1/rpc/update_conversation_state"
+    assert _body(request) == {
+        "p_session_id": str(session_id),
+        "p_conversation_id": str(conversation_id),
+        "p_expected_version": 4,
+        "p_state": state,
+    }
+
+
+@pytest.mark.asyncio
+async def test_update_conversation_state_preserves_conflict_markers() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            409,
+            json={"code": "55P03", "message": "run_in_progress"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = PersistenceClient(http, BASE_URL, SECRET)
+        with pytest.raises(PersistenceError) as exc_info:
+            await client.update_conversation_state(
+                uuid4(),
+                uuid4(),
+                1,
+                {"intent": {"country": "RO"}},
+            )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.code == "55P03"
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
 async def test_claim_run_calls_rpc_with_limits_and_normalizes_result() -> None:
     requests: list[httpx.Request] = []
     session_id = uuid4()

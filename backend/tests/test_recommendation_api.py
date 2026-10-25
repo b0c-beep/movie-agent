@@ -11,6 +11,14 @@ import movie_agent.api.recommendations as recommendations_api
 from movie_agent.api.recommendations import MAX_RUN_SECONDS, RUN_LEASE_SECONDS
 from movie_agent.main import app
 from movie_agent.models.intent import MovieIntentPatch, TurnKind
+from movie_agent.models.movies import (
+    MovieDetails,
+    Rating,
+    RatingSource,
+    Recommendation,
+    RecommendationBatch,
+    WatchOptions,
+)
 from movie_agent.security.sessions import sign_session_token
 from movie_agent.services.persistence import (
     ClaimedRun,
@@ -76,6 +84,66 @@ def test_run_failure_metadata_identifies_stage_without_provider_details() -> Non
 def test_recommendation_request_rejects_whitespace_only_message() -> None:
     with pytest.raises(ValueError, match="message must not be blank"):
         recommendations_api.RecommendationRunRequest(message=" \t ", client_request_id="request-1")
+
+
+def test_inspect_results_answers_from_the_selected_saved_card() -> None:
+    batch = RecommendationBatch(
+        recommendations=[
+            Recommendation(
+                rank=1,
+                movie=MovieDetails(
+                    tmdb_id=1,
+                    title="Heat",
+                    release_year=1995,
+                    runtime_minutes=170,
+                    genres=["Crime", "Drama"],
+                    tmdb_url="https://www.themoviedb.org/movie/1",
+                    ratings=[Rating(source=RatingSource.TMDB, value=8.3, scale="10")],
+                ),
+                match_reason="TMDB genre match: Crime.",
+            ),
+            Recommendation(
+                rank=2,
+                movie=MovieDetails(
+                    tmdb_id=2,
+                    title="The Thing",
+                    release_year=1982,
+                    runtime_minutes=109,
+                    genres=["Horror", "Science Fiction"],
+                    tmdb_url="https://www.themoviedb.org/movie/2",
+                    ratings=[Rating(source=RatingSource.TMDB, value=8.1, scale="10")],
+                ),
+                match_reason="TMDB genre match: Horror.",
+            ),
+        ],
+        requested_count=2,
+    )
+
+    answer = recommendations_api._answer_from_saved_results(
+        "Tell me about the second one",
+        batch.model_dump(mode="json"),
+        [
+            {
+                "tmdb_id": 2,
+                "country": "US",
+                "outcome": "no_data",
+                "provider_count": 0,
+                "detail": "TMDB returned no watch-provider data.",
+            }
+        ],
+    )
+
+    assert answer.startswith("The Thing (1982)")
+    assert "runtime 109 minutes" in answer
+    assert "TMDB rating 8.1/10" in answer
+    assert "TMDB has no provider data for US." in answer
+    assert "Heat" not in answer
+
+
+def test_inspect_results_asks_when_a_saved_movie_reference_is_ambiguous() -> None:
+    answer = recommendations_api._answer_from_saved_results("What about the second one?", None)
+
+    assert "There are no saved movie cards" in answer
 
 
 def test_expired_run_replay_without_trace_returns_a_failed_terminal_event() -> None:
@@ -306,6 +374,302 @@ async def test_conversation_snapshot_is_scoped_to_the_signed_session(
     finally:
         monkeypatch.setattr(app.state, "persistence", None, raising=False)
         await persistence_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_country_availability_refresh_updates_only_providers_and_saved_country(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = uuid4()
+    conversation_id = uuid4()
+    now = "2026-10-25T12:01:00+00:00"
+    batch = RecommendationBatch(
+        recommendations=[
+            Recommendation(
+                rank=1,
+                movie=MovieDetails(
+                    tmdb_id=603,
+                    title="The Matrix",
+                    release_year=1999,
+                    tmdb_url="https://www.themoviedb.org/movie/603",
+                    ratings=[Rating(source=RatingSource.TMDB, value=8.2, scale="10")],
+                    watch_options=WatchOptions(country="RO"),
+                ),
+                match_reason="TMDB genre match: Science Fiction.",
+            )
+        ],
+        requested_count=1,
+    )
+    state = {
+        "intent": {"country": "RO", "genres": ["Science Fiction"], "requested_count": 1},
+        "seen_tmdb_ids": [603],
+        "last_result": batch.model_dump(mode="json"),
+        "last_issues": [],
+        "provider_lookups": [],
+    }
+    row = {
+        "id": str(conversation_id),
+        "session_id": str(session_id),
+        "state": state,
+        "version": 3,
+        "active_run_id": None,
+        "active_run_lease": None,
+        "lease_expires_at": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    persistence_requests: list[httpx.Request] = []
+
+    def persistence_handler(request: httpx.Request) -> httpx.Response:
+        persistence_requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, json=[row])
+        assert request.url.path.endswith("/rpc/update_conversation_state")
+        update = json.loads(request.content)
+        assert update["p_expected_version"] == 3
+        assert update["p_state"]["intent"]["country"] == "US"
+        assert update["p_state"]["seen_tmdb_ids"] == [603]
+        row["state"] = update["p_state"]
+        row["version"] = 4
+        row["updated_at"] = "2026-10-25T12:02:00+00:00"
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "conversation_id": str(conversation_id),
+                    "version": 4,
+                    "updated_at": "2026-10-25T12:02:00+00:00",
+                }
+            ],
+        )
+
+    def tmdb_handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/3/movie/603/watch/providers"
+        return httpx.Response(
+            200,
+            json={
+                "id": 603,
+                "results": {
+                    "US": {
+                        "link": "https://www.themoviedb.org/movie/603/watch?locale=US",
+                        "flatrate": [
+                            {"provider_id": 8, "provider_name": "Netflix", "logo_path": "/n.jpg"}
+                        ],
+                    }
+                },
+            },
+        )
+
+    persistence_http = httpx.AsyncClient(transport=httpx.MockTransport(persistence_handler))
+    tmdb_http = httpx.AsyncClient(transport=httpx.MockTransport(tmdb_handler))
+    monkeypatch.setattr(
+        app.state,
+        "persistence",
+        PersistenceClient(persistence_http, "https://project.supabase.co", "test-secret"),
+        raising=False,
+    )
+    monkeypatch.setattr(app.state, "tmdb", TmdbClient(tmdb_http, "test-tmdb-token"), raising=False)
+    monkeypatch.setenv("SESSION_SIGNING_KEY", SIGNING_KEY)
+    token = sign_session_token(session_id, datetime.now(UTC) + timedelta(hours=1), SIGNING_KEY)
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            client.cookies.set("movie_agent_session", token)
+            response = await client.patch(
+                f"/api/recommendations/conversations/{conversation_id}/availability",
+                json={"country": "us", "expected_version": 3},
+            )
+            restored = await client.get(f"/api/recommendations/conversations/{conversation_id}")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["version"] == 4
+        assert payload["intent"]["country"] == "US"
+        assert payload["result"]["recommendations"][0]["movie"]["tmdb_id"] == 603
+        movie = payload["result"]["recommendations"][0]["movie"]
+        assert movie["ratings"][0]["value"] == 8.2
+        assert movie["watch_options"]["country"] == "US"
+        assert movie["watch_options"]["subscription"][0]["name"] == "Netflix"
+        assert payload["provider_lookups"] == [
+            {
+                "tmdb_id": 603,
+                "country": "US",
+                "outcome": "ok",
+                "provider_count": 1,
+                "detail": None,
+            }
+        ]
+        assert restored.status_code == 200
+        assert restored.json()["version"] == 4
+        assert restored.json()["provider_lookups"][0]["country"] == "US"
+        assert [item.method for item in persistence_requests] == ["GET", "POST", "GET"]
+    finally:
+        monkeypatch.setattr(app.state, "persistence", None, raising=False)
+        monkeypatch.setattr(app.state, "tmdb", None, raising=False)
+        await persistence_http.aclose()
+        await tmdb_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_inspect_results_completes_without_tmdb_and_preserves_saved_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = uuid4()
+    conversation_id = uuid4()
+    run_id = uuid4()
+    lease_token = uuid4()
+    now = "2026-10-25T12:01:00+00:00"
+    batch = RecommendationBatch(
+        recommendations=[
+            Recommendation(
+                rank=1,
+                movie=MovieDetails(
+                    tmdb_id=1,
+                    title="Heat",
+                    release_year=1995,
+                    tmdb_url="https://www.themoviedb.org/movie/1",
+                ),
+                match_reason="TMDB genre match: Crime.",
+            ),
+            Recommendation(
+                rank=2,
+                movie=MovieDetails(
+                    tmdb_id=2,
+                    title="The Thing",
+                    release_year=1982,
+                    runtime_minutes=109,
+                    genres=["Horror", "Science Fiction"],
+                    tmdb_url="https://www.themoviedb.org/movie/2",
+                    ratings=[Rating(source=RatingSource.TMDB, value=8.1, scale="10")],
+                ),
+                match_reason="TMDB genre match: Horror.",
+            ),
+        ],
+        requested_count=2,
+    )
+    state = {
+        "intent": {"country": "US", "requested_count": 2},
+        "seen_tmdb_ids": [1, 2],
+        "last_result": batch.model_dump(mode="json"),
+        "last_issues": [],
+        "provider_lookups": [
+            {
+                "tmdb_id": 2,
+                "country": "US",
+                "outcome": "no_data",
+                "provider_count": 0,
+                "detail": "TMDB returned no watch-provider data.",
+            }
+        ],
+    }
+    row = {
+        "id": str(conversation_id),
+        "session_id": str(session_id),
+        "state": state,
+        "version": 2,
+        "active_run_id": None,
+        "active_run_lease": None,
+        "lease_expires_at": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    persisted: dict[str, object] = {}
+
+    def persistence_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else {}
+        if request.method == "GET":
+            return httpx.Response(200, json=[row])
+        if request.url.path.endswith("/rpc/claim_run"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "run_id": str(run_id),
+                        "status": "running",
+                        "replayed": False,
+                        "lease_token": str(lease_token),
+                        "lease_expires_at": "2026-10-25T12:03:00+00:00",
+                        "base_version": 2,
+                        "result": None,
+                        "trace": None,
+                        "error_code": None,
+                        "usage": None,
+                        "created_at": now,
+                        "completed_at": None,
+                    }
+                ],
+            )
+        assert request.url.path.endswith("/rpc/finalize_run")
+        persisted.update(body)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "run_id": str(run_id),
+                    "conversation_id": str(conversation_id),
+                    "version": 3,
+                    "status": "completed",
+                    "completed_at": "2026-10-25T12:02:00+00:00",
+                }
+            ],
+        )
+
+    async def inspect_patch(message, prior, *, model=None):
+        return MovieIntentPatch(turn_kind=TurnKind.INSPECT_RESULTS)
+
+    monkeypatch.setattr(recommendations_api, "extract_intent_patch", inspect_patch)
+    persistence_http = httpx.AsyncClient(transport=httpx.MockTransport(persistence_handler))
+    tmdb_requests: list[httpx.Request] = []
+
+    def tmdb_handler(request: httpx.Request) -> httpx.Response:
+        tmdb_requests.append(request)
+        raise AssertionError("card questions must not call TMDB")
+
+    tmdb_http = httpx.AsyncClient(transport=httpx.MockTransport(tmdb_handler))
+    monkeypatch.setattr(
+        app.state,
+        "persistence",
+        PersistenceClient(persistence_http, "https://project.supabase.co", "test-secret"),
+        raising=False,
+    )
+    monkeypatch.setattr(app.state, "tmdb", TmdbClient(tmdb_http, "test-tmdb-token"), raising=False)
+    monkeypatch.setenv("SESSION_SIGNING_KEY", SIGNING_KEY)
+    token = sign_session_token(session_id, datetime.now(UTC) + timedelta(hours=1), SIGNING_KEY)
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            client.cookies.set("movie_agent_session", token)
+            response = await client.post(
+                "/api/recommendations/stream",
+                json={
+                    "message": "Tell me about the second one",
+                    "client_request_id": "inspect-card-1",
+                    "conversation_id": str(conversation_id),
+                    "expected_version": 2,
+                },
+            )
+
+        assert response.status_code == 200
+        frames = [frame for frame in response.text.split("\n\n") if frame]
+        answer_event = json.loads(frames[-1].split("data: ", 1)[1])
+        assert answer_event["type"] == "completed"
+        assert "The Thing (1982)" in answer_event["data"]["answer"]
+        assert "TMDB has no provider data for US" in answer_event["data"]["answer"]
+        assert tmdb_requests == []
+        assert persisted["p_status"] == "completed"
+        saved_state = persisted["p_state"]
+        assert saved_state["last_result"] == state["last_result"]  # type: ignore[index]
+        assert saved_state["provider_lookups"] == state["provider_lookups"]  # type: ignore[index]
+        assert persisted["p_result"] == {"answer": answer_event["data"]["answer"]}
+    finally:
+        monkeypatch.setattr(app.state, "persistence", None, raising=False)
+        monkeypatch.setattr(app.state, "tmdb", None, raising=False)
+        await persistence_http.aclose()
+        await tmdb_http.aclose()
 
 
 @pytest.mark.asyncio

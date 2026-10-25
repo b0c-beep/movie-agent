@@ -70,7 +70,13 @@ export type RecommendationResult = {
   shortfall_reason: string | null;
   clarification?: string;
   issues: { code: string; message: string; field: string | null }[];
-  provider_lookups: { tmdb_id: number; country: string; outcome: string; provider_count: number }[];
+  provider_lookups: {
+    tmdb_id: number;
+    country: string;
+    outcome: string;
+    provider_count: number;
+    detail?: string | null;
+  }[];
 };
 
 export type ConversationSnapshot = {
@@ -82,6 +88,8 @@ export type ConversationSnapshot = {
     requested_count: number;
     shortfall_reason: string | null;
   } | null;
+  issues: { code: string; message: string; field: string | null; tmdb_id: number | null }[];
+  provider_lookups: RecommendationResult["provider_lookups"];
 };
 
 export async function getConversation(conversationId: string): Promise<ConversationSnapshot | null> {
@@ -90,6 +98,23 @@ export async function getConversation(conversationId: string): Promise<Conversat
   });
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`Conversation lookup failed with status ${response.status}`);
+  return (await response.json()) as ConversationSnapshot;
+}
+
+export async function refreshConversationAvailability(
+  conversationId: string,
+  country: string,
+  expectedVersion: number,
+): Promise<ConversationSnapshot> {
+  const response = await fetch(`/api/recommendations/conversations/${conversationId}/availability`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ country, expected_version: expectedVersion }),
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(payload?.detail ?? `Availability refresh failed with status ${response.status}`);
+  }
   return (await response.json()) as ConversationSnapshot;
 }
 

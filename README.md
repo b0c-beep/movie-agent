@@ -2,7 +2,7 @@
 
 Movie Agent helps answer the deceptively difficult question: **what should I watch tonight?** It turns conversational requests such as “give me three 1990s dark romances” or “an action movie with Sylvester Stallone” into grounded, country-aware recommendations.
 
-> Status: Phase 2 is complete on `main` at `9f98a5e`; a production active-claim conflict returned HTTP 409 in 1.027 seconds. Phase 3 is in progress. PR #17's failure reporting and structured-output compatibility fix is merged, but a post-merge production run still hit the 1,800-token intent extraction limit. The current Phase 3 branch raises that limit to 4,500 and is adding per-tab conversations, a passcode prompt on new app entries, and richer cards and trace labels. These branch changes have passed local checks and browser tests; production verification of the higher limit remains pending.
+> Status: Phase 2 is complete. Phase 3 is in progress on `main` at `5f8a332`, including per-tab conversations, new-tab passcode prompts, richer cards and trace labels, and a 4,500-token intent extraction budget. A post-merge production smoke at this revision completed a synthetic recommendation request. Current unmerged Phase 3 work adds country-only availability refresh, optional OMDb ratings, and answers about saved cards; it is awaiting checks and review.
 
 ## Planned Product Experience
 
@@ -28,7 +28,7 @@ FastAPI + Pydantic AI
         └── Supabase: anonymous sessions, conversations, runs, usage limits
 ```
 
-The model extracts a typed intent patch; TMDB supplies movie facts; application code verifies hard constraints and assembles the cards. The portable backend and protected Phase 2 recommendation flow are deployed on Vercel. Production has returned grounded recommendation batches; intent extraction still needs a production smoke test with the updated token budget.
+The model extracts a typed intent patch; TMDB supplies movie facts; application code verifies hard constraints and assembles the cards. The portable backend and protected recommendation flow are deployed on Vercel. A production smoke at `5f8a332` completed a synthetic request with the updated intent-extraction budget; broader recommendation quality remains under evaluation.
 
 ## Data Sources
 
@@ -112,13 +112,13 @@ PREVIEW_BASE_URL=https://your-frontend-preview.example npm run test:e2e
 
 `PREVIEW_BASE_URL` skips local server startup. The first browser test stubs the access and recommendation APIs; it checks unlock state, streamed recommendation parsing, and card rendering. The second uses the fixture endpoint through the same-origin `/api` rewrite and checks incremental SSE delivery. Use the actual reachable deployment URL; a protected preview may require a browser session with Vercel access.
 
-The Phase 1 deployment proof passed on October 25, 2026: [frontend](https://movie-agent-frontend-iota.vercel.app/) forwarded `/api/health` to the [backend](https://movie-agent-backend.vercel.app/api/health), and deployed Playwright fixture tests passed, including incremental SSE delivery and HttpOnly cookie forwarding. The backend's direct fixture stream delivered five ordered events over about 0.31 seconds. Phase 2 health, passcode unlock, rating filtering, and active-claim conflict behavior were verified in production. Recent failure logs identify the failing stage as Groq intent extraction and show provider HTTP 400 responses; production database calls succeeded. The reviewed fix still needs a deployed smoke test before this incident can be considered resolved.
+The Phase 1 deployment proof passed on October 25, 2026: [frontend](https://movie-agent-frontend-iota.vercel.app/) forwarded `/api/health` to the [backend](https://movie-agent-backend.vercel.app/api/health), and deployed Playwright fixture tests passed, including incremental SSE delivery and HttpOnly cookie forwarding. The backend's direct fixture stream delivered five ordered events over about 0.31 seconds. Phase 2 health, passcode unlock, rating filtering, and active-claim conflict behavior were verified in production. A synthetic production request at `5f8a332` passed through intent update, recommendations, and completion with the 4,500-token budget; its temporary session was removed afterward. This smoke does not establish broad recommendation quality.
 
 ## Current Limitations
 
 - The protected passcode/session flow, TMDB adapter, recommendation API and cards are merged to `main` and deployed. The Supabase schema and core persistence RPCs have been exercised against the project database.
-- The browser suite uses deterministic fixtures. A hosted rating-threshold request passed at production revision `f536fba`; the live active-claim loser returned HTTP 409 in 1.027 seconds after the Phase 2 migration. PR #17 is merged, but a post-merge request still exceeded the 1,800-token intent extraction budget. The current branch raises the limit to 4,500 and awaits deployment verification.
-- The proposed per-tab conversation pointer uses `sessionStorage`; current recommendations receive only the active conversation's preferences. Cross-conversation taste inference is not implemented. These behavior changes remain under review until the Phase 3 branch is merged.
+- The browser suite uses deterministic fixtures. A hosted rating-threshold request passed at production revision `f536fba`; the live active-claim loser returned HTTP 409 in 1.027 seconds after the Phase 2 migration. The 4,500-token extraction budget passed one synthetic production smoke at `5f8a332`.
+- The per-tab conversation pointer uses `sessionStorage`; recommendations receive only the active conversation's preferences. Cross-conversation taste inference is not implemented. Phase 3 changes to country refresh, optional OMDb enrichment, and saved-card questions are under review and are not yet deployed.
 - Availability is provider-level and country-specific; it may be incomplete or stale.
 - Subjective qualities such as “dark” are interpretations, not objective catalog fields.
 - Rotten Tomatoes enrichment is optional and may be absent for individual titles.

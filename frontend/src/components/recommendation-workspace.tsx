@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 
 import {
   getConversation,
+  refreshConversationAvailability,
   streamRecommendations,
   type RecommendationCard,
   type RecommendationResult,
@@ -108,8 +109,11 @@ export function RecommendationWorkspace() {
   const [conversation, setConversation] = useState<SavedConversation | null>(null);
   const [events, setEvents] = useState<TraceEvent[]>([]);
   const [result, setResult] = useState<RecommendationResult | null>(null);
+  const [answer, setAnswer] = useState<string | null>(null);
   const [status, setStatus] = useState("Ready");
   const [isRunning, setIsRunning] = useState(false);
+  const [isRefreshingAvailability, setIsRefreshingAvailability] = useState(false);
+  const [availabilityError, setAvailabilityError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const conversationId = conversation?.id;
@@ -141,9 +145,11 @@ export function RecommendationWorkspace() {
           setResult({
             ...snapshot.result,
             intent: snapshot.intent,
-            issues: [],
-            provider_lookups: [],
+            issues: snapshot.issues ?? [],
+            provider_lookups: snapshot.provider_lookups ?? [],
           });
+        } else {
+          setResult(null);
         }
       })
       .catch(() => {
@@ -160,8 +166,9 @@ export function RecommendationWorkspace() {
     const controller = new AbortController();
     abortRef.current = controller;
     setEvents([]);
-    setResult(null);
     setError(null);
+    setAvailabilityError(null);
+    setAnswer(null);
     setStatus("Starting");
     setIsRunning(true);
     let terminalEvent: TraceEvent | null = null;
@@ -190,6 +197,12 @@ export function RecommendationWorkspace() {
           setStatus(nextEvent.type.replaceAll("_", " "));
           if (nextEvent.type === "recommendations" && nextEvent.data) {
             setResult(nextEvent.data as unknown as RecommendationResult);
+          }
+          if (
+            nextEvent.type === "completed" &&
+            typeof nextEvent.data?.answer === "string"
+          ) {
+            setAnswer(nextEvent.data.answer);
           }
         },
         controller.signal,
@@ -220,11 +233,47 @@ export function RecommendationWorkspace() {
     abortRef.current?.abort();
     setConversation(null);
     setResult(null);
+    setAnswer(null);
     setEvents([]);
     setMessage("");
     setError(null);
+    setAvailabilityError(null);
     setStatus("Ready");
     saveConversation(null);
+  }
+
+  async function changeAvailabilityCountry(country: string): Promise<boolean> {
+    if (!conversation || !result || isRunning || isRefreshingAvailability) return false;
+    setIsRefreshingAvailability(true);
+    setAvailabilityError(null);
+    try {
+      const snapshot = await refreshConversationAvailability(
+        conversation.id,
+        country,
+        conversation.version,
+      );
+      const nextConversation = { id: snapshot.conversation_id, version: snapshot.version };
+      setConversation(nextConversation);
+      saveConversation(nextConversation);
+      if (snapshot.result) {
+        setResult({
+          ...snapshot.result,
+          intent: snapshot.intent,
+          issues: snapshot.issues ?? [],
+          provider_lookups: snapshot.provider_lookups ?? [],
+        });
+      }
+      return true;
+    } catch (reason) {
+      setAvailabilityError(
+        reason instanceof Error
+          ? reason.message
+          : "Could not update country availability. Your saved preferences were not changed.",
+      );
+      return false;
+    } finally {
+      setIsRefreshingAvailability(false);
+    }
   }
 
   return (
@@ -283,6 +332,7 @@ export function RecommendationWorkspace() {
           <span data-testid="status">{status}</span>
         </div>
         {error ? <p role="alert">{error}</p> : null}
+        {answer ? <p className="conversationAnswer" role="status">{answer}</p> : null}
         {events.length === 0 ? (
           <p className="empty">Your search steps will appear here.</p>
         ) : (
@@ -303,7 +353,16 @@ export function RecommendationWorkspace() {
         )}
       </section>
 
-      {result ? <Results result={result} /> : null}
+      {result ? (
+        <Results
+          error={availabilityError}
+          isRefreshing={isRefreshingAvailability}
+          isRunning={isRunning}
+          key={String(result.intent?.country ?? "RO")}
+          onCountryChange={changeAvailabilityCountry}
+          result={result}
+        />
+      ) : null}
       <footer className="attribution" aria-label="Credits">
         <a href="https://www.themoviedb.org/" rel="noreferrer" target="_blank">
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -325,7 +384,50 @@ export function RecommendationWorkspace() {
   );
 }
 
-function Results({ result }: { result: RecommendationResult }) {
+const COUNTRY_OPTIONS = [
+  ["RO", "Romania"],
+  ["US", "United States"],
+  ["GB", "United Kingdom"],
+  ["CA", "Canada"],
+  ["AU", "Australia"],
+  ["NZ", "New Zealand"],
+  ["DE", "Germany"],
+  ["FR", "France"],
+  ["ES", "Spain"],
+  ["IT", "Italy"],
+  ["NL", "Netherlands"],
+  ["IE", "Ireland"],
+  ["JP", "Japan"],
+  ["KR", "South Korea"],
+  ["IN", "India"],
+  ["BR", "Brazil"],
+] as const;
+
+function Results({
+  result,
+  error,
+  isRefreshing,
+  isRunning,
+  onCountryChange,
+}: {
+  result: RecommendationResult;
+  error: string | null;
+  isRefreshing: boolean;
+  isRunning: boolean;
+  onCountryChange: (country: string) => Promise<boolean>;
+}) {
+  const savedCountry =
+    typeof result.intent?.country === "string" && /^[A-Z]{2}$/.test(result.intent.country)
+      ? result.intent.country
+      : "RO";
+  const [selectedCountry, setSelectedCountry] = useState(savedCountry);
+
+  async function selectCountry(country: string) {
+    setSelectedCountry(country);
+    const updated = await onCountryChange(country);
+    if (!updated) setSelectedCountry(savedCountry);
+  }
+
   return (
     <section className="results" aria-live="polite">
       <div className="resultsHeading">
@@ -335,7 +437,35 @@ function Results({ result }: { result: RecommendationResult }) {
             {result.recommendations.length} of {result.requested_count} picks
           </h2>
         </div>
+        {result.recommendations.length ? (
+          <div className="countryPicker">
+            <label htmlFor="availability-country">Streaming availability country</label>
+            <select
+              disabled={isRefreshing || isRunning}
+              id="availability-country"
+              onChange={(event) => void selectCountry(event.target.value)}
+              value={selectedCountry}
+            >
+              {!COUNTRY_OPTIONS.some(([code]) => code === selectedCountry) ? (
+                <option value={selectedCountry}>{selectedCountry}</option>
+              ) : null}
+              {COUNTRY_OPTIONS.map(([code, label]) => (
+                <option key={code} value={code}>
+                  {label} ({code})
+                </option>
+              ))}
+            </select>
+            <span aria-live="polite" className="countryStatus">
+              {isRefreshing
+                ? "Refreshing providers…"
+                : isRunning
+                  ? "Wait for the current search to finish."
+                  : "Provider lookup only; movie picks stay the same."}
+            </span>
+          </div>
+        ) : null}
       </div>
+      {error ? <p className="availabilityError" role="alert">{error}</p> : null}
       {result.shortfall_reason ? <p className="shortfall">{result.shortfall_reason}</p> : null}
       {result.clarification ? <p className="shortfall">{result.clarification}</p> : null}
       {result.recommendations.length ? (
