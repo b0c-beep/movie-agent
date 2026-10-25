@@ -42,13 +42,16 @@ class FakeTmdbClient:
         self,
         *,
         pages: dict[int, TmdbMoviePage] | None = None,
+        similar_pages: dict[int, TmdbMoviePage] | None = None,
         details: dict[int, TmdbMovieDetails | Exception] | None = None,
         providers: dict[int, TmdbWatchOptions | Exception] | None = None,
     ) -> None:
         self.pages = pages or {}
+        self.similar_pages = similar_pages or {}
         self.details = details or {}
         self.providers = providers or {}
         self.discover_calls: list[tuple[TmdbDiscoverFilters, int]] = []
+        self.similar_calls: list[tuple[int, int]] = []
         self.detail_calls: list[int] = []
         self.provider_calls: list[tuple[int, str]] = []
         self.people_calls: list[str] = []
@@ -76,6 +79,10 @@ class FakeTmdbClient:
     ) -> TmdbMoviePage:
         self.discover_calls.append((filters, page))
         return self.pages.get(page, _page(page, 0, []))
+
+    async def get_similar_movies(self, tmdb_id: int, *, page: int = 1) -> TmdbMoviePage:
+        self.similar_calls.append((tmdb_id, page))
+        return self.similar_pages.get(tmdb_id, _page(page, 0, []))
 
     async def get_movie_details(self, tmdb_id: int) -> TmdbMovieDetails:
         self.detail_calls.append(tmdb_id)
@@ -750,6 +757,36 @@ async def test_person_searches_are_bounded_and_preserve_order() -> None:
     assert client.people_calls == [f"Actor {index}" for index in range(1, 11)]
     filters, _ = client.discover_calls[0]
     assert filters.people_ids == list(range(1001, 1011))
+
+
+@pytest.mark.asyncio
+async def test_similar_title_seed_is_bounded_and_hard_constraints_still_apply() -> None:
+    client = FakeTmdbClient(
+        similar_pages={
+            949: _page(1, 4, [_candidate(949), _candidate(10), _candidate(11), _candidate(12)])
+        },
+        pages={1: _page(1, 1, [_candidate(99)])},
+        details={
+            10: _details(10, genres=("Action",)),
+            11: _details(11, genres=("Crime",)),
+            12: _details(12, genres=("Crime",)),
+        },
+    )
+
+    result = await assemble_recommendations(
+        client,
+        MovieIntent(genres=["Crime"], requested_count=1),
+        similar_to_tmdb_id=949,
+        similar_to_title="Heat",
+    )
+
+    assert client.similar_calls == [(949, 1)]
+    assert client.discover_calls == []
+    assert client.detail_calls == [10, 11]
+    assert [item.movie.tmdb_id for item in result.batch.recommendations] == [11]
+    assert "similar-titles results for Heat" in result.batch.recommendations[0].match_reason
+    assert result.batch.recommendations[0].matched_constraints == ["genre:Crime"]
+    assert result.batch.shortfall_reason is None
 
 
 @pytest.mark.asyncio

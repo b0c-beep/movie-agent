@@ -11,6 +11,8 @@ async def test_intent_agent_returns_typed_patch_without_unrequested_filters() ->
         custom_output_args={
             "turn_kind": "refine",
             "requested_count": 2,
+            "similar_to_title": None,
+            "similar_to_year": None,
             "genres": None,
             "moods": None,
             "release_year_min": None,
@@ -36,6 +38,7 @@ async def test_intent_agent_returns_typed_patch_without_unrequested_filters() ->
     assert patch.tmdb_rating_min == 7.5
     assert patch.genres is None
     assert patch.country is None
+    assert patch.similar_to_title is None
 
 
 @pytest.mark.asyncio

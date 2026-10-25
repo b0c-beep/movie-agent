@@ -23,6 +23,7 @@ from movie_agent.models.tmdb import (
 
 BASE_URL = "https://api.themoviedb.org/3"
 MAX_PERSON_QUERY_LENGTH = 200
+MAX_TITLE_QUERY_LENGTH = 200
 _APPENDED_DETAILS = "credits,keywords,external_ids"
 
 
@@ -70,6 +71,37 @@ class TmdbClient:
             "person search",
         )
 
+    async def search_movies(
+        self,
+        title: str,
+        *,
+        year: int | None = None,
+        page: int = 1,
+    ) -> TmdbMoviePage:
+        query = title.strip()
+        if not query or len(query) > MAX_TITLE_QUERY_LENGTH:
+            raise ValueError(f"title must contain 1-{MAX_TITLE_QUERY_LENGTH} chars")
+        _require_page(page)
+        if year is not None:
+            _require_year(year)
+
+        params: dict[str, str | int] = {
+            "query": query,
+            "page": page,
+            "include_adult": "false",
+        }
+        if year is not None:
+            params["year"] = year
+
+        payload = await self._get("/search/movie", params)
+        return _movie_page(payload, "movie title search")
+
+    async def get_similar_movies(self, tmdb_id: int, *, page: int = 1) -> TmdbMoviePage:
+        _require_tmdb_id(tmdb_id)
+        _require_page(page)
+        payload = await self._get(f"/movie/{tmdb_id}/similar", {"page": page})
+        return _movie_page(payload, "similar movies")
+
     async def discover_movies(
         self,
         filters: TmdbDiscoverFilters | None = None,
@@ -100,17 +132,7 @@ class TmdbClient:
             params["watch_region"] = resolved.watch_region
 
         payload = await self._get("/discover/movie", params)
-        raw_results = _as_sequence(payload.get("results"), "movie results")
-        return _validate(
-            TmdbMoviePage,
-            {
-                "page": payload.get("page"),
-                "total_pages": payload.get("total_pages"),
-                "total_results": payload.get("total_results"),
-                "results": [_candidate(item) for item in raw_results],
-            },
-            "movie discovery",
-        )
+        return _movie_page(payload, "movie discovery")
 
     async def get_movie_details(self, tmdb_id: int) -> TmdbMovieDetails:
         _require_tmdb_id(tmdb_id)
@@ -254,6 +276,20 @@ def _person(value: object) -> dict[str, object]:
     }
 
 
+def _movie_page(payload: Mapping[str, Any], label: str) -> TmdbMoviePage:
+    raw_results = _as_sequence(payload.get("results"), "movie results")
+    return _validate(
+        TmdbMoviePage,
+        {
+            "page": payload.get("page"),
+            "total_pages": payload.get("total_pages"),
+            "total_results": payload.get("total_results"),
+            "results": [_candidate(item) for item in raw_results],
+        },
+        label,
+    )
+
+
 def _candidate(value: object) -> dict[str, object]:
     movie = _as_mapping(value, "movie result")
     return {
@@ -342,6 +378,11 @@ def _tmdb_rating(average: object, vote_count: object) -> object:
 def _require_page(page: int) -> None:
     if not isinstance(page, int) or isinstance(page, bool) or not 1 <= page <= MAX_PAGE:
         raise ValueError(f"page must be between 1 and {MAX_PAGE}")
+
+
+def _require_year(year: int) -> None:
+    if not isinstance(year, int) or isinstance(year, bool) or not MIN_YEAR <= year <= MAX_YEAR:
+        raise ValueError(f"year must be between {MIN_YEAR} and {MAX_YEAR}")
 
 
 def _require_tmdb_id(tmdb_id: int) -> None:

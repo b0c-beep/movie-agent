@@ -390,3 +390,251 @@ async def test_result_page_bounds_reject_oversized_provider_pages() -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         with pytest.raises(TmdbError):
             await TmdbClient(http, "token").search_people("Any Person")
+
+
+@pytest.mark.asyncio
+async def test_search_movies_sends_title_year_and_normalizes_results() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "page": 1,
+                "total_pages": 1,
+                "total_results": 2,
+                "results": [
+                    {
+                        "id": 949,
+                        "title": "Heat",
+                        "original_title": "Heat",
+                        "release_date": "1995-12-15",
+                        "overview": "A crew of thieves.",
+                        "poster_path": "/heat.jpg",
+                        "vote_average": 8.0,
+                        "vote_count": 7000,
+                        "genre_ids": [80, 18],
+                    },
+                    {
+                        "id": 950,
+                        "title": "Heat 2",
+                        "original_title": "Heat 2",
+                        "release_date": "",
+                        "overview": "",
+                        "poster_path": None,
+                        "vote_average": 0.0,
+                        "vote_count": 0,
+                        "genre_ids": [],
+                    },
+                ],
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        page = await TmdbClient(http, " token ").search_movies(" Heat ", year=1995)
+
+    assert page.page == 1
+    assert page.total_pages == 1
+    assert page.total_results == 2
+    assert page.results[0].tmdb_id == 949
+    assert page.results[0].title == "Heat"
+    assert page.results[0].release_year == 1995
+    assert page.results[0].tmdb_rating == 8.0
+    assert page.results[0].genre_ids == [80, 18]
+    assert page.results[1].release_year is None
+    assert page.results[1].tmdb_rating is None
+
+    request = requests[0]
+    assert request.url.path == "/3/search/movie"
+    assert dict(request.url.params) == {
+        "query": "Heat",
+        "year": "1995",
+        "page": "1",
+        "include_adult": "false",
+    }
+    assert request.headers["authorization"] == "Bearer token"
+
+
+@pytest.mark.asyncio
+async def test_search_movies_without_year_omits_year_param() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "page": 3,
+                "total_pages": 3,
+                "total_results": 41,
+                "results": [],
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        page = await TmdbClient(http, "token").search_movies("Heat", page=3)
+
+    assert page.page == 3
+    assert page.results == []
+    assert dict(requests[0].url.params) == {
+        "query": "Heat",
+        "page": "3",
+        "include_adult": "false",
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_similar_movies_uses_verified_id_path_and_bounded_page() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "page": 2,
+                "total_pages": 4,
+                "total_results": 70,
+                "results": [
+                    {
+                        "id": 101,
+                        "title": "Thief",
+                        "original_title": "Thief",
+                        "release_date": "1981-03-27",
+                        "overview": "A safecracker.",
+                        "poster_path": "/thief.jpg",
+                        "vote_average": 7.1,
+                        "vote_count": 1200,
+                        "genre_ids": [80, 53],
+                    }
+                ],
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        page = await TmdbClient(http, "token").get_similar_movies(949, page=2)
+
+    assert page.page == 2
+    assert page.total_pages == 4
+    assert page.total_results == 70
+    assert page.results[0].tmdb_id == 101
+    assert page.results[0].title == "Thief"
+    assert page.results[0].release_year == 1981
+    assert page.results[0].genre_ids == [80, 53]
+
+    request = requests[0]
+    assert request.url.path == "/3/movie/949/similar"
+    assert dict(request.url.params) == {"page": "2"}
+    assert request.headers["authorization"] == "Bearer token"
+
+
+@pytest.mark.asyncio
+async def test_title_and_similar_inputs_are_validated_before_any_request() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = TmdbClient(http, "token")
+
+        with pytest.raises(ValueError):
+            await client.search_movies("   ")
+        with pytest.raises(ValueError):
+            await client.search_movies("x" * 201)
+        with pytest.raises(ValueError):
+            await client.search_movies("Heat", year=1887)
+        with pytest.raises(ValueError):
+            await client.search_movies("Heat", year=2201)
+        with pytest.raises(ValueError):
+            await client.search_movies("Heat", year=True)
+        with pytest.raises(ValueError):
+            await client.search_movies("Heat", page=0)
+        with pytest.raises(ValueError):
+            await client.get_similar_movies(0)
+        with pytest.raises(ValueError):
+            await client.get_similar_movies(949, page=501)
+
+    assert requests == []
+
+
+@pytest.mark.asyncio
+async def test_title_and_similar_malformed_payloads_raise_typed_error() -> None:
+    def missing_id(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "page": 1,
+                "total_pages": 1,
+                "total_results": 1,
+                "results": [{"title": "Missing ID"}],
+            },
+        )
+
+    def malformed_results(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "page": 1,
+                "total_pages": 1,
+                "total_results": 1,
+                "results": "not a list",
+            },
+        )
+
+    def oversized_results(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "page": 1,
+                "total_pages": 1,
+                "total_results": 21,
+                "results": [{"id": index, "title": f"Movie {index}"} for index in range(1, 22)],
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(missing_id)) as http:
+        with pytest.raises(TmdbError):
+            await TmdbClient(http, "token").search_movies("Heat")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(malformed_results)) as http:
+        with pytest.raises(TmdbError):
+            await TmdbClient(http, "token").get_similar_movies(949)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(oversized_results)) as http:
+        with pytest.raises(TmdbError):
+            await TmdbClient(http, "token").search_movies("Heat")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 429, 500])
+async def test_title_and_similar_provider_errors_are_typed_without_retry(status: int) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(status, json={"status_message": "failure"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = TmdbClient(http, "token")
+
+        with pytest.raises(TmdbError) as title_error:
+            await client.search_movies("Heat")
+        with pytest.raises(TmdbError) as similar_error:
+            await client.get_similar_movies(949)
+
+    assert title_error.value.status_code == status
+    assert similar_error.value.status_code == status
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_title_search_transport_errors_are_typed() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection failed", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(TmdbError):
+            await TmdbClient(http, "token").search_movies("Heat")

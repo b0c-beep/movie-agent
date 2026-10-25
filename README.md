@@ -2,7 +2,7 @@
 
 Movie Agent helps answer the deceptively difficult question: **what should I watch tonight?** It turns conversational requests such as “give me three 1990s dark romances” or “an action movie with Sylvester Stallone” into grounded, country-aware recommendations.
 
-> Status: Phase 2 is complete. Phase 3 is in progress on `main` at `5f8a332`, including per-tab conversations, new-tab passcode prompts, richer cards and trace labels, and a 4,500-token intent extraction budget. A post-merge production smoke at this revision completed a synthetic recommendation request. Current Phase 3 work adds country-only availability refresh, optional OMDb ratings, and answers about saved cards; local checks pass and the changes are pending owner review.
+> Status: Phase 2 is complete. Phase 3 is in progress on `main` at `ee6acfe`, including per-tab conversations, country-only availability refresh, optional OMDb ratings, and answers about saved cards. Both Vercel production deployments are READY at this revision. The Supabase conversation-state migration is applied. A review branch adds grounded TMDB title similarity and accessible clarification/session states; actor disambiguation and full multi-turn transcript/trace history remain future work.
 
 ## Planned Product Experience
 
@@ -118,7 +118,7 @@ The Phase 1 deployment proof passed on October 25, 2026: [frontend](https://movi
 
 - The protected passcode/session flow, TMDB adapter, recommendation API and cards are merged to `main` and deployed. The Supabase schema and core persistence RPCs have been exercised against the project database.
 - The browser suite uses deterministic fixtures. A hosted rating-threshold request passed at production revision `f536fba`; the live active-claim loser returned HTTP 409 in 1.027 seconds after the Phase 2 migration. The 4,500-token extraction budget passed one synthetic production smoke at `5f8a332`.
-- The per-tab conversation pointer uses `sessionStorage`; recommendations receive only the active conversation's preferences. Cross-conversation taste inference is not implemented. Phase 3 changes to country refresh, optional OMDb enrichment, and saved-card questions are under review and are not yet deployed.
+- The per-tab conversation pointer uses `sessionStorage`; recommendations receive only the active conversation's preferences. Cross-conversation taste inference is not implemented. Country refresh, optional OMDb enrichment, saved-card questions, and atomic conversation-state updates are deployed. Actor disambiguation, a full multi-turn transcript/trace history, filter editing, and explicitly relaxed closest-match recovery remain planned work.
 - Availability is provider-level and country-specific; it may be incomplete or stale.
 - Subjective qualities such as “dark” are interpretations, not objective catalog fields.
 - Rotten Tomatoes enrichment is optional and may be absent for individual titles.

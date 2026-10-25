@@ -104,6 +104,19 @@ function failureMessage(event: TraceEvent): string {
   return "The recommendation run could not be completed. Your conversation was not changed—please try again.";
 }
 
+function requestErrorMessage(reason: unknown, fallback: string): string {
+  if (!(reason instanceof Error)) return fallback;
+  if (/session expired|status 401/i.test(reason.message)) {
+    return "Your session expired. Reload this tab to enter the passcode again.";
+  }
+  return reason.message;
+}
+
+function countryName(code: string): string {
+  const option = COUNTRY_OPTIONS.find(([value]) => value === code);
+  return option ? option[1] : code;
+}
+
 export function RecommendationWorkspace() {
   const [message, setMessage] = useState("");
   const [conversation, setConversation] = useState<SavedConversation | null>(null);
@@ -114,6 +127,7 @@ export function RecommendationWorkspace() {
   const [isRunning, setIsRunning] = useState(false);
   const [isRefreshingAvailability, setIsRefreshingAvailability] = useState(false);
   const [availabilityError, setAvailabilityError] = useState<string | null>(null);
+  const [availabilityNotice, setAvailabilityNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const conversationId = conversation?.id;
@@ -145,6 +159,20 @@ export function RecommendationWorkspace() {
           setResult({
             ...snapshot.result,
             intent: snapshot.intent,
+            clarification: snapshot.clarification ?? undefined,
+            issues: snapshot.issues ?? [],
+            provider_lookups: snapshot.provider_lookups ?? [],
+          });
+        } else if (snapshot.clarification) {
+          setResult({
+            intent: snapshot.intent,
+            recommendations: [],
+            requested_count:
+              typeof snapshot.intent.requested_count === "number"
+                ? snapshot.intent.requested_count
+                : 5,
+            shortfall_reason: null,
+            clarification: snapshot.clarification,
             issues: snapshot.issues ?? [],
             provider_lookups: snapshot.provider_lookups ?? [],
           });
@@ -152,8 +180,12 @@ export function RecommendationWorkspace() {
           setResult(null);
         }
       })
-      .catch(() => {
-        if (active) setError("Could not restore this conversation. Start a new search.");
+      .catch((reason) => {
+        if (active) {
+          setError(
+            requestErrorMessage(reason, "Could not restore this conversation. Start a new search."),
+          );
+        }
       });
     return () => {
       active = false;
@@ -168,10 +200,11 @@ export function RecommendationWorkspace() {
     setEvents([]);
     setError(null);
     setAvailabilityError(null);
+    setAvailabilityNotice(null);
     setAnswer(null);
     setStatus("Starting");
     setIsRunning(true);
-    let terminalEvent: TraceEvent | null = null;
+    const terminal: { event: TraceEvent | null } = { event: null };
 
     try {
       const response = await streamRecommendations(
@@ -184,14 +217,22 @@ export function RecommendationWorkspace() {
         (nextEvent) => {
           setEvents((current) => [...current, nextEvent]);
           if (nextEvent.type === "failed") {
-            terminalEvent = nextEvent;
+            terminal.event = nextEvent;
             setStatus("Failed");
             setError(failureMessage(nextEvent));
             return;
           }
           if (nextEvent.type === "cancelled") {
-            terminalEvent = nextEvent;
+            terminal.event = nextEvent;
             setStatus("Cancelled");
+            return;
+          }
+          if (nextEvent.type === "needs_clarification") {
+            terminal.event = nextEvent;
+            setStatus("Needs clarification");
+            if (nextEvent.data) {
+              setResult(nextEvent.data as unknown as RecommendationResult);
+            }
             return;
           }
           setStatus(nextEvent.type.replaceAll("_", " "));
@@ -207,7 +248,7 @@ export function RecommendationWorkspace() {
         },
         controller.signal,
       );
-      if (terminalEvent) return;
+      if (terminal.event?.type === "failed" || terminal.event?.type === "cancelled") return;
       const nextConversation = {
         id: response.conversationId,
         version: (conversation?.version ?? 1) + 1,
@@ -215,14 +256,16 @@ export function RecommendationWorkspace() {
       setConversation(nextConversation);
       saveConversation(nextConversation);
       setMessage("");
-      setStatus("Complete");
+      setStatus(
+        terminal.event?.type === "needs_clarification" ? "Needs clarification" : "Complete",
+      );
     } catch (reason) {
-      if (terminalEvent) return;
+      if (terminal.event) return;
       if (controller.signal.aborted) {
         setStatus("Cancelled");
       } else {
         setStatus("Failed");
-        setError(reason instanceof Error ? reason.message : "The recommendation request failed.");
+        setError(requestErrorMessage(reason, "The recommendation request failed."));
       }
     } finally {
       setIsRunning(false);
@@ -238,6 +281,7 @@ export function RecommendationWorkspace() {
     setMessage("");
     setError(null);
     setAvailabilityError(null);
+    setAvailabilityNotice(null);
     setStatus("Ready");
     saveConversation(null);
   }
@@ -246,6 +290,7 @@ export function RecommendationWorkspace() {
     if (!conversation || !result || isRunning || isRefreshingAvailability) return false;
     setIsRefreshingAvailability(true);
     setAvailabilityError(null);
+    setAvailabilityNotice(null);
     try {
       const snapshot = await refreshConversationAvailability(
         conversation.id,
@@ -263,12 +308,14 @@ export function RecommendationWorkspace() {
           provider_lookups: snapshot.provider_lookups ?? [],
         });
       }
+      setAvailabilityNotice(`Streaming availability updated for ${countryName(country)}.`);
       return true;
     } catch (reason) {
       setAvailabilityError(
-        reason instanceof Error
-          ? reason.message
-          : "Could not update country availability. Your saved preferences were not changed.",
+        requestErrorMessage(
+          reason,
+          "Could not update country availability. Your saved preferences were not changed.",
+        ),
       );
       return false;
     } finally {
@@ -326,17 +373,19 @@ export function RecommendationWorkspace() {
         </form>
       </section>
 
-      <section className="trace" aria-live="polite" aria-busy={isRunning}>
+      <section className="trace" aria-labelledby="trace-heading">
         <div className="traceHeader">
-          <h2>Search progress</h2>
-          <span data-testid="status">{status}</span>
+          <h2 id="trace-heading">Search progress</h2>
+          <span aria-live="polite" data-testid="status" role="status">
+            {status}
+          </span>
         </div>
         {error ? <p role="alert">{error}</p> : null}
         {answer ? <p className="conversationAnswer" role="status">{answer}</p> : null}
         {events.length === 0 ? (
           <p className="empty">Your search steps will appear here.</p>
         ) : (
-          <ol>
+          <ol aria-live="polite" aria-relevant="additions">
             {events.map((event) => (
               <li key={event.event_id}>
                 <div className="traceLabels">
@@ -358,7 +407,7 @@ export function RecommendationWorkspace() {
           error={availabilityError}
           isRefreshing={isRefreshingAvailability}
           isRunning={isRunning}
-          key={String(result.intent?.country ?? "RO")}
+          notice={availabilityNotice}
           onCountryChange={changeAvailabilityCountry}
           result={result}
         />
@@ -408,46 +457,59 @@ function Results({
   error,
   isRefreshing,
   isRunning,
+  notice,
   onCountryChange,
 }: {
   result: RecommendationResult;
   error: string | null;
   isRefreshing: boolean;
   isRunning: boolean;
+  notice: string | null;
   onCountryChange: (country: string) => Promise<boolean>;
 }) {
   const savedCountry =
     typeof result.intent?.country === "string" && /^[A-Z]{2}$/.test(result.intent.country)
       ? result.intent.country
       : "RO";
-  const [selectedCountry, setSelectedCountry] = useState(savedCountry);
+  const countryPickerRef = useRef<HTMLSelectElement>(null);
+
+  useEffect(() => {
+    if (countryPickerRef.current) countryPickerRef.current.value = savedCountry;
+  }, [savedCountry]);
 
   async function selectCountry(country: string) {
-    setSelectedCountry(country);
+    if (isRefreshing || isRunning) {
+      if (countryPickerRef.current) countryPickerRef.current.value = savedCountry;
+      return;
+    }
     const updated = await onCountryChange(country);
-    if (!updated) setSelectedCountry(savedCountry);
+    if (!updated && countryPickerRef.current) countryPickerRef.current.value = savedCountry;
   }
 
   return (
-    <section className="results" aria-live="polite">
+    <section className="results" aria-labelledby="results-heading">
       <div className="resultsHeading">
         <div>
           <p className="eyebrow">Your shortlist</p>
-          <h2>
-            {result.recommendations.length} of {result.requested_count} picks
+          <h2 id="results-heading">
+            {result.clarification
+              ? "A little more detail needed"
+              : `${result.recommendations.length} of ${result.requested_count} picks`}
           </h2>
         </div>
         {result.recommendations.length ? (
           <div className="countryPicker">
             <label htmlFor="availability-country">Streaming availability country</label>
             <select
-              disabled={isRefreshing || isRunning}
+              aria-disabled={isRefreshing || isRunning}
+              defaultValue={savedCountry}
+              disabled={isRunning}
               id="availability-country"
               onChange={(event) => void selectCountry(event.target.value)}
-              value={selectedCountry}
+              ref={countryPickerRef}
             >
-              {!COUNTRY_OPTIONS.some(([code]) => code === selectedCountry) ? (
-                <option value={selectedCountry}>{selectedCountry}</option>
+              {!COUNTRY_OPTIONS.some(([code]) => code === savedCountry) ? (
+                <option value={savedCountry}>{savedCountry}</option>
               ) : null}
               {COUNTRY_OPTIONS.map(([code, label]) => (
                 <option key={code} value={code}>
@@ -460,14 +522,22 @@ function Results({
                 ? "Refreshing providers…"
                 : isRunning
                   ? "Wait for the current search to finish."
-                  : "Provider lookup only; movie picks stay the same."}
+                  : notice ?? "Provider lookup only; movie picks stay the same."}
             </span>
           </div>
         ) : null}
       </div>
       {error ? <p className="availabilityError" role="alert">{error}</p> : null}
-      {result.shortfall_reason ? <p className="shortfall">{result.shortfall_reason}</p> : null}
-      {result.clarification ? <p className="shortfall">{result.clarification}</p> : null}
+      {result.shortfall_reason ? (
+        <p className="shortfall" role="status">
+          {result.shortfall_reason}
+        </p>
+      ) : null}
+      {result.clarification ? (
+        <p className="clarification shortfall" role="status">
+          {result.clarification}
+        </p>
+      ) : null}
       {result.recommendations.length ? (
         <div className="movieGrid">
           {result.recommendations.map((recommendation) => (
@@ -480,7 +550,7 @@ function Results({
             />
           ))}
         </div>
-      ) : (
+      ) : result.clarification ? null : (
         <p className="empty">No verified matches yet. Try loosening one of the filters.</p>
       )}
     </section>

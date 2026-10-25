@@ -141,8 +141,14 @@ test("unlocks the app and displays streamed grounded recommendations", async ({ 
     "https://image.tmdb.org/t/p/w92/netflix.jpg",
   );
   await expect(page.locator(".trace li")).toHaveCount(3);
-  await page.getByLabel("Streaming availability country").selectOption("US");
+  const availabilityCountry = page.getByLabel("Streaming availability country");
+  await availabilityCountry.focus();
+  await availabilityCountry.selectOption("US");
   await expect(page.locator(".providers")).toContainText("Max");
+  await expect(page.getByLabel("Streaming availability country")).toBeFocused();
+  await expect(page.locator(".countryStatus")).toHaveText(
+    "Streaming availability updated for United States.",
+  );
   expect(availabilityRequests).toEqual([{ country: "US", expected_version: 2 }]);
   expect(streamCalls).toBe(1);
   await expect
@@ -224,6 +230,230 @@ test("shows streamed failures and keeps the saved conversation version", async (
   await expect
     .poll(() => page.evaluate(() => sessionStorage.getItem("movie-agent-conversation")))
     .toBe(JSON.stringify(savedConversation));
+});
+
+test("shows a clarification prompt as an announced result state", async ({ page }) => {
+  await page.route("**/api/auth/session", (route) =>
+    route.fulfill({ status: 401, contentType: "application/json", body: '{"detail":"locked"}' }),
+  );
+  await page.route("**/api/auth/unlock", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authenticated: true,
+        session_id: "fixture-session",
+        expires_at: "2030-01-01T00:00:00Z",
+      }),
+    }),
+  );
+  await page.route("**/api/recommendations/stream", (route) => {
+    const event = (
+      sequence: number,
+      type: string,
+      stage: string,
+      summary: string,
+      data?: Record<string, unknown>,
+    ) =>
+      `id: ${sequence}\nevent: ${type}\ndata: ${JSON.stringify({
+        event_id: `clarification-event-${sequence}`,
+        run_id: "fixture-clarification-run",
+        sequence,
+        stage,
+        type,
+        origin: "application",
+        summary,
+        timestamp: "2026-10-25T12:00:00Z",
+        metadata: {},
+        data,
+      })}\n\n`;
+    return route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      headers: {
+        "x-conversation-id": "fixture-clarification",
+        "x-run-id": "fixture-clarification-run",
+      },
+      body: [
+        event(1, "run_started", "predict", "Starting a protected movie search"),
+        event(2, "needs_clarification", "complete", "Which decade do you prefer?", {
+          intent: { requested_count: 5, country: "RO" },
+          recommendations: [],
+          requested_count: 5,
+          shortfall_reason: null,
+          clarification: "Which decade do you prefer?",
+          issues: [],
+          provider_lookups: [],
+        }),
+      ].join(""),
+    });
+  });
+  await page.route("**/api/recommendations/conversations/fixture-clarification", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        conversation_id: "fixture-clarification",
+        version: 2,
+        intent: { requested_count: 5, country: "RO" },
+        result: null,
+        clarification: "Which decade do you prefer?",
+        issues: [],
+        provider_lookups: [],
+      }),
+    }),
+  );
+
+  await page.goto("/");
+  await page.getByLabel("Passcode").fill("fixture-passcode");
+  await page.getByRole("button", { name: "Enter" }).click();
+  await page
+    .getByLabel("Tell me what you're in the mood for")
+    .fill("Help me narrow this down");
+  await page.getByRole("button", { name: "Get recommendations" }).click();
+
+  await expect(page.getByTestId("status")).toHaveText("Needs clarification");
+  const clarification = page.locator(".clarification");
+  await expect(clarification).toHaveText("Which decade do you prefer?");
+  await expect(clarification).toHaveAttribute("role", "status");
+  await expect(
+    page.getByRole("heading", { name: "A little more detail needed" }),
+  ).toBeVisible();
+  await expect(page.getByText("No verified matches yet")).toHaveCount(0);
+  await expect
+    .poll(() => page.evaluate(() => sessionStorage.getItem("movie-agent-conversation")))
+    .toBe(JSON.stringify({ id: "fixture-clarification", version: 2 }));
+});
+
+test("restores a saved clarification when the same tab reloads", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.sessionStorage.setItem("movie-agent-entry-unlocked", "true");
+    window.sessionStorage.setItem(
+      "movie-agent-conversation",
+      JSON.stringify({ id: "fixture-clarification", version: 2 }),
+    );
+  });
+  await page.route("**/api/auth/session", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authenticated: true,
+        session_id: "fixture-session",
+        expires_at: "2030-01-01T00:00:00Z",
+      }),
+    }),
+  );
+  await page.route("**/api/recommendations/conversations/fixture-clarification", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        conversation_id: "fixture-clarification",
+        version: 2,
+        intent: { requested_count: 5, country: "RO" },
+        result: null,
+        clarification: "Which decade do you prefer?",
+        issues: [],
+        provider_lookups: [],
+      }),
+    }),
+  );
+
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "A little more detail needed" })).toBeVisible();
+  await expect(page.locator(".clarification")).toHaveText("Which decade do you prefer?");
+});
+
+test("announces an expired session and keeps country selection usable", async ({ page }) => {
+  const savedConversation = { id: "fixture-conversation", version: 3 };
+  await page.addInitScript((conversation) => {
+    window.sessionStorage.setItem("movie-agent-conversation", JSON.stringify(conversation));
+  }, savedConversation);
+  await page.route("**/api/auth/session", (route) =>
+    route.fulfill({ status: 401, contentType: "application/json", body: '{"detail":"locked"}' }),
+  );
+  await page.route("**/api/auth/unlock", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authenticated: true,
+        session_id: "fixture-session",
+        expires_at: "2030-01-01T00:00:00Z",
+      }),
+    }),
+  );
+  const recommendation = {
+    rank: 1,
+    match_reason: "TMDB lists this as science fiction.",
+    matched_constraints: ["genre:Science Fiction"],
+    caveats: [],
+    movie: {
+      tmdb_id: 603,
+      title: "The Matrix",
+      release_year: 1999,
+      runtime_minutes: 136,
+      genres: ["Science Fiction"],
+      overview: "A hacker discovers a simulated world.",
+      poster_url: null,
+      tmdb_url: "https://www.themoviedb.org/movie/603",
+      imdb_url: null,
+      ratings: [{ source: "tmdb", value: 8.2, scale: "10", vote_count: 100 }],
+      watch_options: {
+        country: "RO",
+        subscription: [{ provider_id: 8, name: "Netflix", logo_path: "/netflix.jpg" }],
+        free: [],
+        ads: [],
+        rent: [],
+        buy: [],
+      },
+    },
+  };
+  await page.route(
+    "**/api/recommendations/conversations/fixture-conversation/availability",
+    (route) =>
+      route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "App session expired" }),
+      }),
+  );
+  await page.route("**/api/recommendations/conversations/fixture-conversation", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        conversation_id: savedConversation.id,
+        version: savedConversation.version,
+        intent: { requested_count: 1, country: "RO" },
+        result: {
+          recommendations: [recommendation],
+          requested_count: 1,
+          shortfall_reason: null,
+        },
+        issues: [],
+        provider_lookups: [
+          { tmdb_id: 603, country: "RO", outcome: "ok", provider_count: 1, detail: null },
+        ],
+      }),
+    }),
+  );
+
+  await page.goto("/");
+  await page.getByLabel("Passcode").fill("fixture-passcode");
+  await page.getByRole("button", { name: "Enter" }).click();
+  await expect(page.getByRole("heading", { name: "The Matrix" })).toBeVisible();
+  const countryPicker = page.getByLabel("Streaming availability country");
+  await countryPicker.focus();
+  await countryPicker.selectOption("US");
+
+  await expect(page.locator(".availabilityError")).toHaveText(
+    "Your session expired. Reload this tab to enter the passcode again.",
+  );
+  await expect(page.locator(".availabilityError")).toHaveAttribute("role", "alert");
+  await expect(countryPicker).toHaveValue("RO");
+  await expect(countryPicker).toBeFocused();
 });
 
 test("asks for the passcode in a new tab but remembers it after reload in the current tab", async ({
