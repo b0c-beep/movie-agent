@@ -2,7 +2,7 @@
 
 Movie Agent helps answer the deceptively difficult question: **what should I watch tonight?** It turns conversational requests such as “give me three 1990s dark romances” or “an action movie with Sylvester Stallone” into grounded, country-aware recommendations.
 
-> Status: Phase 2 implementation is in progress on `feat/conversational-recommendations` and has not been merged or deployed. Local protected API and browser flows are covered with deterministic tests; live database behavior still needs verification.
+> Status: Phase 2 protected recommendation code has merged to `main` in PR #7, but is not live on the hosted app. Local checks and Vercel preview builds pass; the Supabase migration and hosted data flow still need verification.
 
 ## Planned Product Experience
 
@@ -115,7 +115,7 @@ The Phase 1 deployment proof passed on October 25, 2026: [frontend](https://movi
 
 ## Current Limitations
 
-- The protected passcode/session flow, TMDB adapter, recommendation API and cards are implemented on the Phase 2 branch. Real Supabase migration/RPC behavior and live recommendation quality have not been verified yet.
+- The protected passcode/session flow, TMDB adapter, recommendation API and cards are merged to `main`. Real Supabase migration/RPC behavior and live recommendation quality have not been verified yet.
 - The Phase 2 browser test uses deterministic API fixtures. Hosted Phase 1 health, fixture streaming, and cookie forwarding passed; the current recommendation route still needs a deployed smoke test after applying the migration and setting backend secrets.
 - Availability is provider-level and country-specific; it may be incomplete or stale.
 - Subjective qualities such as “dark” are interpretations, not objective catalog fields.
