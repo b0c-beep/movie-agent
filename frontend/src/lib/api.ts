@@ -68,7 +68,7 @@ export type RecommendationResult = {
   recommendations: RecommendationCard[];
   requested_count: number;
   shortfall_reason: string | null;
-  clarification?: string;
+  clarification?: string | null;
   issues: { code: string; message: string; field: string | null }[];
   provider_lookups: {
     tmdb_id: number;
@@ -83,6 +83,7 @@ export type ConversationSnapshot = {
   conversation_id: string;
   version: number;
   intent: Record<string, unknown>;
+  clarification?: string | null;
   result: {
     recommendations: RecommendationCard[];
     requested_count: number;

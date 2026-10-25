@@ -257,6 +257,8 @@ async def assemble_recommendations(
     *,
     excluded_tmdb_ids: Sequence[int] = (),
     omdb: ExternalRatingsClient | None = None,
+    similar_to_tmdb_id: int | None = None,
+    similar_to_title: str | None = None,
 ) -> RecommendationAssembly:
     """Assemble at most ``requested_count`` verified recommendations.
 
@@ -276,6 +278,7 @@ async def assemble_recommendations(
         filters,
         requested_count=intent.requested_count,
         excluded_ids=exclusions,
+        similar_to_tmdb_id=similar_to_tmdb_id,
     )
 
     recommendations: list[Recommendation] = []
@@ -374,6 +377,7 @@ async def assemble_recommendations(
                 intent=intent,
                 watch_options=watch_options,
                 provider_caveats=provider_caveats,
+                similar_to_title=similar_to_title,
             )
         )
 
@@ -725,10 +729,23 @@ async def _discover_candidates(
     *,
     requested_count: int,
     excluded_ids: Sequence[int],
+    similar_to_tmdb_id: int | None = None,
 ) -> list[TmdbMovieCandidate]:
     cap = requested_count * CANDIDATES_PER_REQUESTED_MOVIE
     seen = set(excluded_ids)
     candidates: list[TmdbMovieCandidate] = []
+    if similar_to_tmdb_id is not None:
+        seen.add(similar_to_tmdb_id)
+        page = await client.get_similar_movies(similar_to_tmdb_id, page=1)
+        for candidate in page.results:
+            if candidate.tmdb_id in seen:
+                continue
+            seen.add(candidate.tmdb_id)
+            candidates.append(candidate)
+            if len(candidates) >= min(cap, MAX_DETAILS_TO_VERIFY):
+                break
+        return candidates
+
     page_number = 1
 
     while page_number <= MAX_DISCOVERY_PAGES and len(candidates) < cap:
@@ -924,6 +941,7 @@ def _build_recommendation(
     intent: MovieIntent,
     watch_options: WatchOptions | None,
     provider_caveats: Sequence[str],
+    similar_to_title: str | None = None,
 ) -> Recommendation:
     caveats = list(provider_caveats)
     if intent.moods:
@@ -932,7 +950,12 @@ def _build_recommendation(
     return Recommendation(
         rank=rank,
         movie=_movie_details(details, watch_options),
-        match_reason=_match_reason(details, intent),
+        match_reason=(
+            f"TMDB's similar-titles results for {similar_to_title} included this movie. "
+            f"{_match_reason(details, intent)}"
+            if similar_to_title is not None
+            else _match_reason(details, intent)
+        ),
         matched_constraints=_matched_constraints(details, intent)[:MAX_MATCHED_CONSTRAINTS],
         caveats=_dedupe_texts(caveats)[:MAX_CAVEATS],
     )

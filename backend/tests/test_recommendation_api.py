@@ -19,6 +19,7 @@ from movie_agent.models.movies import (
     RecommendationBatch,
     WatchOptions,
 )
+from movie_agent.models.tmdb import TmdbMovieCandidate, TmdbMoviePage
 from movie_agent.security.sessions import sign_session_token
 from movie_agent.services.persistence import (
     ClaimedRun,
@@ -144,6 +145,51 @@ def test_inspect_results_asks_when_a_saved_movie_reference_is_ambiguous() -> Non
     answer = recommendations_api._answer_from_saved_results("What about the second one?", None)
 
     assert "There are no saved movie cards" in answer
+
+
+@pytest.mark.asyncio
+async def test_similar_title_resolution_requires_a_grounded_exact_match() -> None:
+    class SearchClient:
+        async def search_movies(self, title: str, *, year: int | None = None):
+            assert title == "Heat"
+            return TmdbMoviePage(
+                page=1,
+                total_pages=1,
+                total_results=2,
+                results=[
+                    TmdbMovieCandidate(tmdb_id=949, title="Heat", release_year=1995),
+                    TmdbMovieCandidate(tmdb_id=1124, title="Heat", release_year=2022),
+                ],
+            )
+
+    unresolved, question = await recommendations_api._resolve_similar_reference(
+        SearchClient(), "Heat", None
+    )
+    assert unresolved is None
+    assert question is not None
+    assert "Heat (1995)" in question
+    assert "Heat (2022)" in question
+
+    resolved, no_question = await recommendations_api._resolve_similar_reference(
+        SearchClient(), "Heat", 1995
+    )
+    assert no_question is None
+    assert resolved == {"tmdb_id": 949, "title": "Heat", "year": 1995}
+
+
+def test_conversation_snapshot_restores_saved_clarification() -> None:
+    snapshot = recommendations_api._snapshot_from_conversation(
+        uuid4(),
+        2,
+        {
+            "intent": {"country": "RO", "requested_count": 3},
+            "last_clarification": "Which decade do you prefer?",
+        },
+    )
+
+    assert snapshot.clarification == "Which decade do you prefer?"
+    assert snapshot.result is None
+    assert snapshot.intent.requested_count == 3
 
 
 def test_expired_run_replay_without_trace_returns_a_failed_terminal_event() -> None:
@@ -778,6 +824,7 @@ async def test_clarification_result_uses_the_complete_result_shape(
         assert event["data"]["issues"] == []
         assert event["data"]["provider_lookups"] == []
         assert persisted["p_result"] == event["data"]
+        assert persisted["p_state"]["last_clarification"] == "Which decade do you prefer?"
     finally:
         monkeypatch.setattr(app.state, "persistence", None, raising=False)
         monkeypatch.setattr(app.state, "tmdb", None, raising=False)

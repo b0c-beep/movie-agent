@@ -87,10 +87,14 @@ class MovieIntentPatch(BaseModel):
     ] = Field(default_factory=list, max_length=5)
     requested_count: int | None = Field(default=None, ge=1, le=10)
     country: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
+    similar_to_title: str | None = Field(default=None, min_length=1, max_length=120)
+    similar_to_year: int | None = Field(default=None, ge=1888, le=2200)
     clarification: str | None = Field(default=None, max_length=240)
 
     @model_validator(mode="after")
     def clear_does_not_conflict_with_updates(self) -> MovieIntentPatch:
+        if self.similar_to_year is not None and self.similar_to_title is None:
+            raise ValueError("similar_to_year requires similar_to_title")
         conflicts = {
             "people": self.people is not None,
             "release_year": self.release_year_min is not None or self.release_year_max is not None,

@@ -92,6 +92,7 @@ class ConversationSnapshot(BaseModel):
     version: int = Field(ge=1)
     intent: MovieIntent
     result: RecommendationBatch | None = None
+    clarification: str | None = Field(default=None, max_length=240)
     issues: list[AssemblyIssue] = Field(default_factory=list)
     provider_lookups: list[ProviderLookup] = Field(default_factory=list)
 
@@ -169,6 +170,7 @@ async def refresh_conversation_availability(
         issues = [
             AssemblyIssue.model_validate(item) for item in conversation.state.get("last_issues", [])
         ]
+        clarification = _stored_clarification(conversation.state)
     except Exception:
         raise HTTPException(
             status_code=503, detail="Stored conversation data is malformed"
@@ -207,6 +209,7 @@ async def refresh_conversation_availability(
         version=updated.version,
         intent=updated_intent,
         result=result,
+        clarification=clarification,
         issues=issues,
         provider_lookups=provider_lookups,
     )
@@ -318,6 +321,36 @@ async def stream_recommendations(
                     "Interpreting the latest request against saved preferences",
                 )
                 patch = await extract_intent_patch(body.message, prior_intent)
+                similar_reference: dict[str, Any] | None = None
+                title_clarification: str | None = None
+                if patch.turn_kind is not TurnKind.INSPECT_RESULTS:
+                    failure_stage = "tmdb_title_lookup"
+                    if patch.similar_to_title is not None:
+                        yield emit(
+                            TraceStage.ACT,
+                            TraceEventType.TOOL_STARTED,
+                            "Checking the named reference title in TMDB",
+                            metadata={"provider": "tmdb", "operation": "search_movies"},
+                        )
+                        similar_reference, title_clarification = await _resolve_similar_reference(
+                            tmdb,
+                            patch.similar_to_title,
+                            patch.similar_to_year,
+                        )
+                        yield emit(
+                            TraceStage.ACT,
+                            TraceEventType.TOOL_FINISHED,
+                            (
+                                "Reference title was resolved"
+                                if similar_reference
+                                else "Reference title needs clarification"
+                            ),
+                            metadata={"provider": "tmdb", "operation": "search_movies"},
+                        )
+                    elif patch.turn_kind is not TurnKind.NEW_SEARCH:
+                        similar_reference = _saved_similar_reference(prior_state)
+                else:
+                    similar_reference = _saved_similar_reference(prior_state)
                 failure_stage = "intent_merge"
                 merge_base = (
                     MovieIntent() if patch.turn_kind is TurnKind.NEW_SEARCH else prior_intent
@@ -326,9 +359,9 @@ async def stream_recommendations(
                 current_intent = merged.intent
                 clarification: str | None
                 if patch.turn_kind is TurnKind.INSPECT_RESULTS:
-                    clarification = "Questions about individual movie cards are not supported yet."
+                    clarification = None
                 else:
-                    clarification = merged.clarification
+                    clarification = merged.clarification or title_clarification
 
                 current_state = {
                     **({} if patch.turn_kind is TurnKind.NEW_SEARCH else prior_state),
@@ -339,6 +372,10 @@ async def stream_recommendations(
                         else current_seen_ids[-MAX_SEEN_IDS:]
                     ),
                 }
+                if similar_reference is not None:
+                    current_state["similar_reference"] = similar_reference
+                else:
+                    current_state.pop("similar_reference", None)
                 yield emit(
                     TraceStage.DECIDE,
                     TraceEventType.INTENT_UPDATED,
@@ -355,6 +392,7 @@ async def stream_recommendations(
 
                 result_data: dict[str, Any]
                 if patch.turn_kind is TurnKind.INSPECT_RESULTS:
+                    current_state.pop("last_clarification", None)
                     answer = _answer_from_saved_results(
                         body.message,
                         prior_state.get("last_result"),
@@ -381,6 +419,7 @@ async def stream_recommendations(
                     return
 
                 if clarification:
+                    current_state["last_clarification"] = clarification
                     result_data = {
                         "intent": current_intent.model_dump(mode="json"),
                         "recommendations": [],
@@ -412,7 +451,11 @@ async def stream_recommendations(
                 yield emit(
                     TraceStage.ACT,
                     TraceEventType.TOOL_STARTED,
-                    "Resolving people, searching TMDB, and checking movie details",
+                    (
+                        f"Finding verified movies similar to {similar_reference['title']}"
+                        if similar_reference is not None
+                        else "Resolving people, searching TMDB, and checking movie details"
+                    ),
                     metadata={"provider": "tmdb"},
                 )
                 failure_stage = "tmdb_recommendations"
@@ -420,6 +463,12 @@ async def stream_recommendations(
                     tmdb,
                     current_intent,
                     omdb=_omdb(request),
+                    similar_to_tmdb_id=(
+                        similar_reference["tmdb_id"] if similar_reference is not None else None
+                    ),
+                    similar_to_title=(
+                        similar_reference["title"] if similar_reference is not None else None
+                    ),
                     excluded_tmdb_ids=(
                         merged.excluded_tmdb_ids if patch.turn_kind is TurnKind.ANOTHER_SET else ()
                     ),
@@ -449,11 +498,13 @@ async def stream_recommendations(
                     "intent": current_intent.model_dump(mode="json"),
                     "seen_tmdb_ids": current_seen_ids,
                     "last_result": assembly.batch.model_dump(mode="json"),
+                    **({"similar_reference": similar_reference} if similar_reference else {}),
                     "last_issues": [item.model_dump(mode="json") for item in assembly.issues],
                     "provider_lookups": [
                         item.model_dump(mode="json") for item in assembly.provider_lookups
                     ],
                 }
+                current_state.pop("last_clarification", None)
                 result_data = {
                     "intent": current_intent.model_dump(mode="json"),
                     "recommendations": [
@@ -647,6 +698,75 @@ def _persistence_http_error(error: PersistenceError) -> HTTPException:
     return HTTPException(status_code=503, detail="Conversation storage is unavailable")
 
 
+async def _resolve_similar_reference(
+    client: TmdbClient,
+    title: str,
+    year: int | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        page = await client.search_movies(title, year=year)
+    except (TmdbError, ValueError):
+        return None, "I couldn't verify that reference title with TMDB. Please try again."
+
+    wanted = _normalize_title(title)
+    exact = [
+        movie
+        for movie in page.results
+        if wanted
+        in {
+            _normalize_title(movie.title),
+            _normalize_title(movie.original_title or ""),
+        }
+        and (year is None or movie.release_year == year)
+    ]
+    if len(exact) == 1:
+        movie = exact[0]
+        return {
+            "tmdb_id": movie.tmdb_id,
+            "title": movie.title,
+            "year": movie.release_year,
+        }, None
+
+    choices = exact or page.results[:4]
+    if not choices:
+        return None, (
+            f"I couldn't find {title!r} in TMDB. Try another title or include its release year."
+        )
+
+    labels = [
+        f"{movie.title} ({movie.release_year})" if movie.release_year else movie.title
+        for movie in choices
+    ]
+    prompt = (
+        "Which reference movie did you mean? Choose one: "
+        + "; ".join(f"{index}. {label}" for index, label in enumerate(labels, start=1))
+        + ". Reply with 'like Title (Year)' so I can search TMDB's similar titles."
+    )
+    return None, prompt[:240]
+
+
+def _saved_similar_reference(state: dict[str, Any]) -> dict[str, Any] | None:
+    value = state.get("similar_reference")
+    if not isinstance(value, dict):
+        return None
+    tmdb_id = value.get("tmdb_id")
+    title = value.get("title")
+    year = value.get("year")
+    if (
+        isinstance(tmdb_id, bool)
+        or not isinstance(tmdb_id, int)
+        or tmdb_id <= 0
+        or not isinstance(title, str)
+        or not title.strip()
+    ):
+        return None
+    return {"tmdb_id": tmdb_id, "title": title, "year": year}
+
+
+def _normalize_title(value: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", value.casefold()))
+
+
 def _snapshot_from_conversation(
     conversation_id: UUID,
     version: int,
@@ -660,6 +780,7 @@ def _snapshot_from_conversation(
         provider_lookups = [
             ProviderLookup.model_validate(item) for item in state.get("provider_lookups", [])
         ]
+        clarification = _stored_clarification(state)
     except Exception:
         raise HTTPException(
             status_code=503, detail="Stored conversation data is malformed"
@@ -669,9 +790,19 @@ def _snapshot_from_conversation(
         version=version,
         intent=intent,
         result=result,
+        clarification=clarification,
         issues=issues,
         provider_lookups=provider_lookups,
     )
+
+
+def _stored_clarification(state: dict[str, Any]) -> str | None:
+    value = state.get("last_clarification")
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) > 240:
+        raise ValueError("Stored clarification is malformed")
+    return value
 
 
 def _answer_from_saved_results(
