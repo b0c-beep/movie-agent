@@ -113,6 +113,82 @@ test("unlocks the app and displays streamed grounded recommendations", async ({ 
   await expect(page.locator(".trace li")).toHaveCount(3);
 });
 
+test("shows streamed failures and keeps the saved conversation version", async ({ page }) => {
+  const savedConversation = { id: "fixture-conversation", version: 3 };
+  await page.addInitScript((conversation) => {
+    window.localStorage.setItem("movie-agent-conversation", JSON.stringify(conversation));
+  }, savedConversation);
+  await page.route("**/api/auth/session", (route) =>
+    route.fulfill({ status: 401, contentType: "application/json", body: '{"detail":"locked"}' }),
+  );
+  await page.route("**/api/auth/unlock", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authenticated: true,
+        session_id: "fixture-session",
+        expires_at: "2030-01-01T00:00:00Z",
+      }),
+    }),
+  );
+  await page.route("**/api/recommendations/conversations/fixture-conversation", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        conversation_id: savedConversation.id,
+        version: savedConversation.version,
+        intent: {},
+        result: null,
+      }),
+    }),
+  );
+  await page.route("**/api/recommendations/stream", (route) => {
+    const event = (sequence: number, type: string, summary: string, metadata = {}) =>
+      `id: ${sequence}\nevent: ${type}\ndata: ${JSON.stringify({
+        event_id: `failed-event-${sequence}`,
+        run_id: "fixture-failed-run",
+        sequence,
+        stage: type === "failed" ? "complete" : "predict",
+        type,
+        origin: "application",
+        summary,
+        timestamp: "2026-10-25T12:00:00Z",
+        metadata,
+      })}\n\n`;
+    return route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      headers: {
+        "x-conversation-id": savedConversation.id,
+        "x-run-id": "fixture-failed-run",
+      },
+      body: [
+        event(1, "run_started", "Starting a protected movie search"),
+        event(2, "failed", "The recommendation run could not be completed", {
+          error_code: "recommendation_failed",
+          failure_stage: "intent_extraction",
+          exception_type: "UnexpectedModelBehavior",
+        }),
+      ].join(""),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByLabel("Passcode").fill("fixture-passcode");
+  await page.getByRole("button", { name: "Enter" }).click();
+  await expect(page.getByRole("button", { name: "New search" })).toBeVisible();
+  await page.getByLabel("Tell me what you're in the mood for").fill("three comedies");
+  await page.getByRole("button", { name: "Get recommendations" }).click();
+
+  await expect(page.getByTestId("status")).toHaveText("Failed");
+  await expect(page.locator(".trace [role=alert]")).toContainText("couldn’t interpret that request");
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("movie-agent-conversation")))
+    .toBe(JSON.stringify(savedConversation));
+});
+
 test("delivers an event before the stream completes", async ({ page }) => {
   await page.goto("/");
 
