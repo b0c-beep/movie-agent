@@ -6,11 +6,15 @@ import { RecommendationWorkspace } from "@/components/recommendation-workspace";
 
 const mocks = vi.hoisted(() => ({
   getConversation: vi.fn(),
+  getRecommendationCapabilities: vi.fn(),
+  getRunStatus: vi.fn(),
   streamRecommendations: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
   getConversation: mocks.getConversation,
+  getRecommendationCapabilities: mocks.getRecommendationCapabilities,
+  getRunStatus: mocks.getRunStatus,
   streamRecommendations: mocks.streamRecommendations,
 }));
 
@@ -43,6 +47,9 @@ describe("RecommendationWorkspace terminal events", () => {
     window.sessionStorage.clear();
     mocks.getConversation.mockReset();
     mocks.getConversation.mockResolvedValue(null);
+    mocks.getRecommendationCapabilities.mockReset();
+    mocks.getRecommendationCapabilities.mockResolvedValue(null);
+    mocks.getRunStatus.mockReset();
     mocks.streamRecommendations.mockReset();
   });
 
@@ -86,6 +93,7 @@ describe("RecommendationWorkspace terminal events", () => {
       expect.objectContaining({ conversationId: "conv-1", expectedVersion: 3 }),
       expect.any(Function),
       expect.any(AbortSignal),
+      expect.any(Function),
     );
   });
 
