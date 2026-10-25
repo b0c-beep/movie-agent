@@ -1,17 +1,116 @@
 import { expect, test } from "@playwright/test";
 
-test("streams fixture events through the same-origin API route", async ({ page, context }) => {
+test("unlocks the app and displays streamed grounded recommendations", async ({ page }) => {
+  await page.route("**/api/auth/session", (route) =>
+    route.fulfill({ status: 401, contentType: "application/json", body: '{"detail":"locked"}' }),
+  );
+  await page.route("**/api/auth/unlock", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authenticated: true,
+        session_id: "fixture-session",
+        expires_at: "2030-01-01T00:00:00Z",
+      }),
+    }),
+  );
+  await page.route("**/api/recommendations/stream", (route) => {
+    const runId = "fixture-run";
+    const now = "2026-10-25T12:00:00Z";
+    const event = (
+      sequence: number,
+      type: string,
+      stage: string,
+      summary: string,
+      data?: Record<string, unknown>,
+    ) =>
+      `id: ${sequence}\nevent: ${type}\ndata: ${JSON.stringify({
+        event_id: `fixture-event-${sequence}`,
+        run_id: runId,
+        sequence,
+        stage,
+        type,
+        origin: "application",
+        summary,
+        timestamp: now,
+        metadata: {},
+        data,
+      })}\n\n`;
+    const recommendation = {
+      rank: 1,
+      match_reason: "TMDB lists this as science fiction.",
+      matched_constraints: ["genre:Science Fiction"],
+      caveats: [],
+      movie: {
+        tmdb_id: 603,
+        title: "The Matrix",
+        release_year: 1999,
+        runtime_minutes: 136,
+        genres: ["Science Fiction"],
+        overview: "A hacker discovers a simulated world.",
+        poster_url: null,
+        tmdb_url: "https://www.themoviedb.org/movie/603",
+        imdb_url: null,
+        ratings: [{ source: "tmdb", value: 8.2, scale: "10", vote_count: 100 }],
+        watch_options: {
+          country: "RO",
+          subscription: [{ provider_id: 8, name: "Netflix", logo_path: "/netflix.jpg" }],
+          free: [],
+          ads: [],
+          rent: [],
+          buy: [],
+        },
+      },
+    };
+    const frames = [
+      event(1, "run_started", "predict", "Starting a protected movie search"),
+      event(2, "recommendations", "complete", "Prepared one grounded recommendation", {
+        intent: { requested_count: 1 },
+        recommendations: [recommendation],
+        requested_count: 1,
+        shortfall_reason: null,
+        issues: [],
+        provider_lookups: [],
+      }),
+      event(3, "completed", "complete", "Recommendation run completed"),
+    ].join("");
+    return route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      headers: {
+        "x-conversation-id": "fixture-conversation",
+        "x-run-id": runId,
+      },
+      body: frames,
+    });
+  });
+  await page.route("**/api/recommendations/conversations/**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        conversation_id: "fixture-conversation",
+        version: 2,
+        intent: { requested_count: 1 },
+        result: null,
+      }),
+    }),
+  );
   await page.goto("/");
-  await page.getByRole("button", { name: "Run fixture" }).click();
+  await page.getByLabel("Passcode").fill("fixture-passcode");
+  await page.getByRole("button", { name: "Enter" }).click();
+  await page.getByLabel("Tell me what you're in the mood for").fill("One science fiction movie");
+  await page.getByRole("button", { name: "Get recommendations" }).click();
 
   await expect(page.getByTestId("status")).toHaveText("Complete");
-  await expect(page.locator(".trace li")).toHaveCount(5);
-  await expect(page.locator(".trace li").last()).toContainText("Fixture stream completed");
-
-  const cookies = await context.cookies();
-  const transportCookie = cookies.find((cookie) => cookie.name === "fixture_transport");
-  expect(transportCookie?.value).toBe("verified");
-  expect(transportCookie?.httpOnly).toBe(true);
+  await expect(page.getByRole("heading", { name: "The Matrix" })).toBeVisible();
+  await expect(page.locator(".movieRating")).toContainText("8.2 / 10");
+  await expect(page.locator(".providerBadge img")).toHaveAttribute(
+    "src",
+    "https://image.tmdb.org/t/p/w92/netflix.jpg",
+  );
+  await expect(page.locator(".trace li")).toHaveCount(3);
 });
 
 test("delivers an event before the stream completes", async ({ page }) => {

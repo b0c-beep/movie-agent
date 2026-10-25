@@ -37,6 +37,28 @@ main {
   backdrop-filter: blur(16px);
 }
 
+.accessCard {
+  max-width: 42rem;
+  margin: 12vh auto 0;
+}
+
+.accessError {
+  margin: 1rem 0 0;
+  color: #ff9b86;
+}
+
+.workspace {
+  width: min(1120px, calc(100% - 2rem));
+}
+
+.workspaceHeading,
+.resultsHeading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
 .trace {
   margin-top: 1rem;
 }
@@ -79,10 +101,16 @@ label {
 }
 
 input,
+textarea,
 button {
   min-height: 3rem;
   border-radius: 0.75rem;
   font: inherit;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
 input {
@@ -92,6 +120,18 @@ input {
   border: 1px solid var(--line);
   background: #0f1116;
   color: var(--text);
+}
+
+textarea {
+  display: block;
+  width: 100%;
+  min-height: 7rem;
+  padding: 0.9rem 1rem;
+  resize: vertical;
+  border: 1px solid var(--line);
+  background: #0f1116;
+  color: var(--text);
+  line-height: 1.5;
 }
 
 button {
@@ -104,9 +144,34 @@ button {
 }
 
 input:focus-visible,
+textarea:focus-visible,
 button:focus-visible {
   outline: 3px solid #fff;
   outline-offset: 3px;
+}
+
+.formActions,
+.actionButtons {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.formActions {
+  margin-top: 0.75rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.actionButtons {
+  justify-content: flex-end;
+}
+
+.quietButton {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
 }
 
 .traceHeader {
@@ -148,9 +213,157 @@ button:focus-visible {
   margin: 0;
 }
 
+.results {
+  margin-top: 1.5rem;
+}
+
+.results h2 {
+  margin: 0;
+  font-size: clamp(1.5rem, 4vw, 2.25rem);
+}
+
+.shortfall {
+  margin: 1rem 0;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.movieGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 29rem), 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.movieCard {
+  display: grid;
+  grid-template-columns: 8rem minmax(0, 1fr);
+  gap: 1rem;
+  overflow: hidden;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  background: var(--surface);
+}
+
+.poster {
+  display: block;
+  min-height: 12rem;
+  overflow: hidden;
+  border-radius: 0.5rem;
+  background: #0f1116;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.posterImage {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 12rem;
+  background-position: center;
+  background-size: cover;
+}
+
+.posterFallback {
+  display: grid;
+  min-height: 12rem;
+  place-items: center;
+  padding: 0.5rem;
+  text-align: center;
+}
+
+.movieInfo h3 {
+  margin: 0.2rem 0 0.6rem;
+  font-size: 1.35rem;
+}
+
+.movieInfo h3 a {
+  color: var(--text);
+  text-decoration-color: var(--accent);
+  text-underline-offset: 0.2em;
+}
+
+.movieMeta,
+.movieRating,
+.providers,
+.caveat {
+  margin: 0.35rem 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.movieRating {
+  color: #ffd1c6;
+}
+
+.movieOverview,
+.matchReason {
+  line-height: 1.5;
+}
+
+.matchReason {
+  color: #ffd1c6;
+}
+
+.providers strong {
+  color: var(--text);
+  margin-right: 0.2rem;
+}
+
+.providerBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-right: 0.65rem;
+}
+
+.providerBadge img {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 0.3rem;
+  object-fit: cover;
+}
+
+.attribution {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem 1rem;
+  margin: 1.5rem 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+.attribution a {
+  display: inline-flex;
+}
+
 @media (max-width: 600px) {
   .promptRow {
     flex-direction: column;
+  }
+
+  .workspaceHeading {
+    flex-direction: column;
+  }
+
+  .movieCard {
+    grid-template-columns: 6rem minmax(0, 1fr);
+    gap: 0.75rem;
+    padding: 0.75rem;
+  }
+
+  .poster,
+  .posterImage,
+  .posterFallback {
+    min-height: 9rem;
   }
 
   .trace li {
