@@ -14,6 +14,25 @@ const CONVERSATION_STORAGE_KEY = "movie-agent-conversation";
 
 type SavedConversation = { id: string; version: number };
 
+function failureMessage(event: TraceEvent): string {
+  const errorCode = typeof event.metadata?.error_code === "string" ? event.metadata.error_code : null;
+  const failureStage =
+    typeof event.metadata?.failure_stage === "string" ? event.metadata.failure_stage : null;
+  if (errorCode === "run_timeout") {
+    return "The search took too long to finish. Your conversation was not changed—please try again.";
+  }
+  if (errorCode === "tmdb_unavailable") {
+    return "Movie data is temporarily unavailable. Your conversation was not changed—please try again.";
+  }
+  if (failureStage === "intent_extraction") {
+    return "I couldn’t interpret that request. Try a shorter prompt with a genre, actor, or rating.";
+  }
+  if (failureStage === "run_finalization") {
+    return "The results could not be saved. Your conversation was not changed—please try again.";
+  }
+  return "The recommendation run could not be completed. Your conversation was not changed—please try again.";
+}
+
 export function RecommendationWorkspace() {
   const [message, setMessage] = useState("");
   const [conversation, setConversation] = useState<SavedConversation | null>(null);
@@ -79,6 +98,7 @@ export function RecommendationWorkspace() {
     setError(null);
     setStatus("Starting");
     setIsRunning(true);
+    let terminalEvent: TraceEvent | null = null;
 
     try {
       const response = await streamRecommendations(
@@ -90,6 +110,17 @@ export function RecommendationWorkspace() {
         },
         (nextEvent) => {
           setEvents((current) => [...current, nextEvent]);
+          if (nextEvent.type === "failed") {
+            terminalEvent = nextEvent;
+            setStatus("Failed");
+            setError(failureMessage(nextEvent));
+            return;
+          }
+          if (nextEvent.type === "cancelled") {
+            terminalEvent = nextEvent;
+            setStatus("Cancelled");
+            return;
+          }
           setStatus(nextEvent.type.replaceAll("_", " "));
           if (nextEvent.type === "recommendations" && nextEvent.data) {
             setResult(nextEvent.data as unknown as RecommendationResult);
@@ -97,6 +128,7 @@ export function RecommendationWorkspace() {
         },
         controller.signal,
       );
+      if (terminalEvent) return;
       const nextConversation = {
         id: response.conversationId,
         version: (conversation?.version ?? 1) + 1,
@@ -106,6 +138,7 @@ export function RecommendationWorkspace() {
       setMessage("");
       setStatus("Complete");
     } catch (reason) {
+      if (terminalEvent) return;
       if (controller.signal.aborted) {
         setStatus("Cancelled");
       } else {

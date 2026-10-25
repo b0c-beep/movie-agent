@@ -383,7 +383,7 @@ async def stream_recommendations(
                 TraceStage.COMPLETE,
                 TraceEventType.FAILED,
                 "The recommendation run could not be completed",
-                metadata={"error_code": code},
+                metadata=_failure_metadata(failure_stage, error, code),
             )
             with contextlib.suppress(PersistenceError):
                 await _finalize(
@@ -526,6 +526,17 @@ def _failure_code(error: Exception) -> str:
     if isinstance(error, TmdbError):
         return "tmdb_unavailable"
     return "recommendation_failed"
+
+
+def _failure_metadata(
+    stage: str, error: Exception, code: str
+) -> dict[str, str | int | float | bool | None]:
+    """Expose bounded diagnostic labels, never provider messages or user input."""
+    return {
+        "error_code": code,
+        "failure_stage": stage,
+        "exception_type": type(error).__name__,
+    }
 
 
 def _log_run_failure(stage: str, run_id: UUID, error: Exception, code: str) -> None:

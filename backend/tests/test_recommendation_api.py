@@ -58,6 +58,21 @@ def test_run_failure_log_has_safe_diagnostics_only(caplog: pytest.LogCaptureFixt
     assert secret_text not in caplog.text
 
 
+def test_run_failure_metadata_identifies_stage_without_provider_details() -> None:
+    secret_text = "provider response contains private prompt details"
+
+    metadata = recommendations_api._failure_metadata(
+        "intent_extraction", RuntimeError(secret_text), "recommendation_failed"
+    )
+
+    assert metadata == {
+        "error_code": "recommendation_failed",
+        "failure_stage": "intent_extraction",
+        "exception_type": "RuntimeError",
+    }
+    assert secret_text not in str(metadata)
+
+
 def test_recommendation_request_rejects_whitespace_only_message() -> None:
     with pytest.raises(ValueError, match="message must not be blank"):
         recommendations_api.RecommendationRunRequest(message=" \t ", client_request_id="request-1")

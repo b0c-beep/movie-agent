@@ -2,7 +2,7 @@
 
 Movie Agent helps answer the deceptively difficult question: **what should I watch tonight?** It turns conversational requests such as “give me three 1990s dark romances” or “an action movie with Sylvester Stallone” into grounded, country-aware recommendations.
 
-> Status: Phase 2 is complete on production commit `127465c`. A production active-claim conflict returned HTTP 409 in 1.027 seconds after the forward migration was applied. Phase 3 is in progress; the first responsive-layout slice is merged. Four historical failed runs stopped during prediction before `intent_updated`; their exception details were not retained and cannot be reconstructed.
+> Status: Phase 2 is complete on `main` at `b2eb1d1`; a production active-claim conflict returned HTTP 409 in 1.027 seconds. Phase 3 is in progress. Recent production runs have failed during Groq intent extraction; provider logs show HTTP 400 responses, while Supabase claim/finalize calls succeeded. A focused fix for structured-output compatibility, failure reporting, and conversation-version handling is in review.
 
 ## Planned Product Experience
 
@@ -28,7 +28,7 @@ FastAPI + Pydantic AI
         └── Supabase: anonymous sessions, conversations, runs, usage limits
 ```
 
-The model extracts a typed intent patch; TMDB supplies movie facts; application code verifies hard constraints and assembles the cards. The portable backend and protected Phase 2 recommendation flow are deployed on Vercel. Production runs have returned grounded recommendation batches, though some attempts still fail.
+The model extracts a typed intent patch; TMDB supplies movie facts; application code verifies hard constraints and assembles the cards. The portable backend and protected Phase 2 recommendation flow are deployed on Vercel. Production has returned grounded recommendation batches, but the current Groq intent-extraction failure is being addressed and still needs deployment verification.
 
 ## Data Sources
 
@@ -112,13 +112,12 @@ PREVIEW_BASE_URL=https://your-frontend-preview.example npm run test:e2e
 
 `PREVIEW_BASE_URL` skips local server startup. The first browser test stubs the access and recommendation APIs; it checks unlock state, streamed recommendation parsing, and card rendering. The second uses the fixture endpoint through the same-origin `/api` rewrite and checks incremental SSE delivery. Use the actual reachable deployment URL; a protected preview may require a browser session with Vercel access.
 
-The Phase 1 deployment proof passed on October 25, 2026: [frontend](https://movie-agent-frontend-iota.vercel.app/) forwarded `/api/health` to the [backend](https://movie-agent-backend.vercel.app/api/health), and both deployed Playwright fixture tests passed, including incremental SSE delivery and HttpOnly cookie forwarding. The backend's direct fixture stream delivered five ordered events over about 0.31 seconds. Phase 2 production health and passcode unlock return successfully. A hosted request for a TMDB rating minimum of 6.5 returned a movie meeting the threshold. A seven-day aggregate showed populated batches and an honest shortfall. Four other runs reached the prediction stage but failed before `intent_updated`; the saved traces do not identify the failing substep, and exception details were not retained. The backend deployed at `f1be7ea` now logs failure stage and exception class without recording prompts, provider messages, or tracebacks.
+The Phase 1 deployment proof passed on October 25, 2026: [frontend](https://movie-agent-frontend-iota.vercel.app/) forwarded `/api/health` to the [backend](https://movie-agent-backend.vercel.app/api/health), and deployed Playwright fixture tests passed, including incremental SSE delivery and HttpOnly cookie forwarding. The backend's direct fixture stream delivered five ordered events over about 0.31 seconds. Phase 2 health, passcode unlock, rating filtering, and active-claim conflict behavior were verified in production. Recent failure logs identify the failing stage as Groq intent extraction and show provider HTTP 400 responses; production database calls succeeded. The reviewed fix still needs a deployed smoke test before this incident can be considered resolved.
 
 ## Current Limitations
 
 - The protected passcode/session flow, TMDB adapter, recommendation API and cards are merged to `main` and deployed. The Supabase schema and core persistence RPCs have been exercised against the project database.
-- The Phase 2 browser test uses deterministic API fixtures. The live rating threshold passed at production revision `f536fba`. Historical `recommendation_failed` traces end before `intent_updated`, but do not pinpoint extraction versus merge/update emission; old logs have expired and do not establish the exception cause. Safe failure-stage and exception-type diagnostics are deployed at `f1be7ea` and will help identify a future recurrence.
-- Live quota-boundary and expired-lease checks passed. Concurrent claims left exactly one running claim, as intended, but the losing live client timed out instead of receiving a conflict response. The SQLSTATE-to-HTTP 409 mapping is covered locally; the live timeout's layer is still under investigation.
+- The browser suite uses deterministic fixtures. A hosted rating-threshold request passed at production revision `f536fba`; the live active-claim loser returned HTTP 409 in 1.027 seconds after the Phase 2 migration. Recent Groq intent-extraction failures are under review; production verification of the proposed structured-output fix remains outstanding.
 - Availability is provider-level and country-specific; it may be incomplete or stale.
 - Subjective qualities such as “dark” are interpretations, not objective catalog fields.
 - Rotten Tomatoes enrichment is optional and may be absent for individual titles.
