@@ -9,7 +9,7 @@ from movie_agent.models.intent import MovieIntent, MovieIntentPatch
 
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 MAX_MESSAGE_CHARS = 1200
-INTENT_OUTPUT_TOKEN_LIMIT = 1800
+INTENT_OUTPUT_TOKEN_LIMIT = 4500
 
 
 def build_intent_agent(model: Model | str | None = None) -> Agent[None, MovieIntentPatch]:
