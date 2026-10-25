@@ -26,7 +26,7 @@ package = true
 packages = ["src/movie_agent"]
 
 [tool.vercel]
-entrypoint = "movie_agent.main:app"
+entrypoint = "src.movie_agent.main:app"
 
 [tool.pytest.ini_options]
 addopts = "-q"
