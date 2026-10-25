@@ -2,38 +2,47 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 
+import { ActiveFilters } from "@/components/active-filters";
+import { ConversationThread } from "@/components/conversation-thread";
+import { ProgressTrace } from "@/components/progress-trace";
+import { RecommendationResults } from "@/components/recommendation-results";
 import {
   getConversation,
+  getRecommendationCapabilities,
+  getRunStatus,
   refreshConversationAvailability,
   streamRecommendations,
-  type RecommendationCard,
+  type ClarificationOption,
+  type ConversationSnapshot,
+  type FilterEdit,
+  type RecommendationCapabilities,
   type RecommendationResult,
   type TraceEvent,
 } from "@/lib/api";
+import { countryName } from "@/lib/countries";
+import {
+  activeFilters,
+  choiceMessage,
+  clearLocalTurns,
+  eventsFromTurns,
+  failureMessage,
+  filterEditMessage,
+  interruptionMessage,
+  latestAnswerFromTurns,
+  latestResultFromTurns,
+  mergeRunEvents,
+  normalizeResult,
+  readLocalTurns,
+  requestErrorMessage,
+  saveLocalTurns,
+  statusLabel,
+  turnsFromSnapshot,
+  type ThreadTurn,
+} from "@/lib/workspace";
 
 const CONVERSATION_STORAGE_KEY = "movie-agent-conversation";
 
-const EVENT_TYPE_LABELS: Record<string, string> = {
-  run_started: "Run started",
-  intent_updated: "Preferences updated",
-  decision: "Decision",
-  tool_started: "Tool started",
-  tool_finished: "Tool finished",
-  recommendations: "Recommendations",
-  completed: "Completed",
-  needs_clarification: "Needs clarification",
-  failed: "Run failed",
-  cancelled: "Run cancelled",
-};
-
-const RATING_LABELS: Record<string, string> = {
-  tmdb: "TMDB",
-  imdb: "IMDb",
-  rotten_tomatoes: "Rotten Tomatoes",
-};
-
 type SavedConversation = { id: string; version: number };
-type ProviderLookup = RecommendationResult["provider_lookups"][number];
 
 function readSavedConversation(): SavedConversation | null {
   try {
@@ -69,75 +78,79 @@ function saveConversation(conversation: SavedConversation | null) {
   }
 }
 
-function eventTypeLabel(type: string): string {
-  return (
-    EVENT_TYPE_LABELS[type] ??
-    type.replaceAll("_", " ").replace(/^./, (character) => character.toUpperCase())
-  );
-}
-
-function ratingLabel(source: string): string {
-  return RATING_LABELS[source] ?? source.replaceAll("_", " ");
-}
-
-function ratingValue(value: number, scale: string): string {
-  const formatted = scale === "10" || !Number.isInteger(value) ? value.toFixed(1) : String(value);
-  return `${formatted} / ${scale}`;
-}
-
-function failureMessage(event: TraceEvent): string {
-  const errorCode = typeof event.metadata?.error_code === "string" ? event.metadata.error_code : null;
-  const failureStage =
-    typeof event.metadata?.failure_stage === "string" ? event.metadata.failure_stage : null;
-  if (errorCode === "run_timeout") {
-    return "The search took too long to finish. Your conversation was not changed—please try again.";
+function resultFromSnapshot(snapshot: ConversationSnapshot): RecommendationResult | null {
+  if (snapshot.result) {
+    return normalizeResult(
+      {
+        ...snapshot.result,
+        intent: snapshot.intent,
+        clarification: snapshot.clarification ?? undefined,
+        clarification_options: snapshot.clarification_options,
+        issues: snapshot.issues ?? [],
+        provider_lookups: snapshot.provider_lookups ?? [],
+      },
+      snapshot.intent,
+    );
   }
-  if (errorCode === "tmdb_unavailable") {
-    return "Movie data is temporarily unavailable. Your conversation was not changed—please try again.";
+  if (snapshot.clarification) {
+    return normalizeResult(
+      {
+        intent: snapshot.intent,
+        recommendations: [],
+        requested_count:
+          typeof snapshot.intent.requested_count === "number"
+            ? snapshot.intent.requested_count
+            : 5,
+        shortfall_reason: null,
+        clarification: snapshot.clarification,
+        clarification_options: snapshot.clarification_options,
+        issues: snapshot.issues ?? [],
+        provider_lookups: snapshot.provider_lookups ?? [],
+      },
+      snapshot.intent,
+    );
   }
-  if (failureStage === "intent_extraction") {
-    return "I couldn’t interpret that request. Try a shorter prompt with a genre, actor, or rating.";
-  }
-  if (failureStage === "run_finalization") {
-    return "The results could not be saved. Your conversation was not changed—please try again.";
-  }
-  return "The recommendation run could not be completed. Your conversation was not changed—please try again.";
-}
-
-function requestErrorMessage(reason: unknown, fallback: string): string {
-  if (!(reason instanceof Error)) return fallback;
-  if (/session expired|status 401/i.test(reason.message)) {
-    return "Your session expired. Reload this tab to enter the passcode again.";
-  }
-  return reason.message;
-}
-
-function countryName(code: string): string {
-  const option = COUNTRY_OPTIONS.find(([value]) => value === code);
-  return option ? option[1] : code;
+  return null;
 }
 
 export function RecommendationWorkspace() {
   const [message, setMessage] = useState("");
   const [conversation, setConversation] = useState<SavedConversation | null>(null);
+  const [turns, setTurns] = useState<ThreadTurn[]>([]);
   const [events, setEvents] = useState<TraceEvent[]>([]);
   const [result, setResult] = useState<RecommendationResult | null>(null);
   const [answer, setAnswer] = useState<string | null>(null);
   const [status, setStatus] = useState("Ready");
   const [isRunning, setIsRunning] = useState(false);
   const [isRefreshingAvailability, setIsRefreshingAvailability] = useState(false);
+  const [isRecovering, setIsRecovering] = useState(false);
+  const [historyRestored, setHistoryRestored] = useState(false);
+  const [capabilities, setCapabilities] = useState<RecommendationCapabilities | null>(null);
   const [availabilityError, setAvailabilityError] = useState<string | null>(null);
   const [availabilityNotice, setAvailabilityNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const turnsRef = useRef<ThreadTurn[]>([]);
   const conversationId = conversation?.id;
 
+  function commitTurns(next: ThreadTurn[]) {
+    turnsRef.current = next;
+    setTurns(next);
+  }
+
   useEffect(() => {
+    let active = true;
+    getRecommendationCapabilities().then((next) => {
+      if (active) setCapabilities(next);
+    });
     const timeout = window.setTimeout(() => {
       const saved = readSavedConversation();
       if (saved) setConversation(saved);
     }, 0);
-    return () => window.clearTimeout(timeout);
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
+    };
   }, []);
 
   useEffect(() => {
@@ -149,36 +162,29 @@ export function RecommendationWorkspace() {
         if (!snapshot) {
           setConversation(null);
           setResult(null);
+          setTurns([]);
+          turnsRef.current = [];
           saveConversation(null);
           return;
         }
-        const restored = { id: snapshot.conversation_id, version: snapshot.version };
-        setConversation(restored);
-        saveConversation(restored);
-        if (snapshot.result) {
-          setResult({
-            ...snapshot.result,
-            intent: snapshot.intent,
-            clarification: snapshot.clarification ?? undefined,
-            issues: snapshot.issues ?? [],
-            provider_lookups: snapshot.provider_lookups ?? [],
-          });
-        } else if (snapshot.clarification) {
-          setResult({
-            intent: snapshot.intent,
-            recommendations: [],
-            requested_count:
-              typeof snapshot.intent.requested_count === "number"
-                ? snapshot.intent.requested_count
-                : 5,
-            shortfall_reason: null,
-            clarification: snapshot.clarification,
-            issues: snapshot.issues ?? [],
-            provider_lookups: snapshot.provider_lookups ?? [],
-          });
-        } else {
-          setResult(null);
-        }
+        const restoredConversation = {
+          id: snapshot.conversation_id,
+          version: snapshot.version,
+        };
+        setConversation(restoredConversation);
+        saveConversation(restoredConversation);
+        const serverTurns = turnsFromSnapshot(snapshot);
+        const localTurns = serverTurns.length ? [] : readLocalTurns(conversationId);
+        const nextTurns = serverTurns.length ? serverTurns : localTurns;
+        turnsRef.current = nextTurns;
+        setTurns(nextTurns);
+        setHistoryRestored(serverTurns.length > 0);
+        const restoredResult =
+          latestResultFromTurns(nextTurns) ?? resultFromSnapshot(snapshot);
+        setResult(restoredResult);
+        setAnswer(latestAnswerFromTurns(nextTurns));
+        const restoredEvents = eventsFromTurns(nextTurns);
+        if (restoredEvents.length) setEvents(restoredEvents);
       })
       .catch((reason) => {
         if (active) {
@@ -192,62 +198,136 @@ export function RecommendationWorkspace() {
     };
   }, [conversationId]);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function submitTurn(options: {
+    message: string;
+    clarificationChoiceId?: string | null;
+    filterEdit?: FilterEdit | null;
+    clearPrompt?: boolean;
+  }) {
+    const text = options.message.trim();
+    if (!text || isRunning) return;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
-    setEvents([]);
+    const requestId = window.crypto.randomUUID();
+    const turnId = requestId;
+    const pendingTurn: ThreadTurn = {
+      id: turnId,
+      runId: null,
+      userMessage: text,
+      status: "Starting",
+      result: null,
+      answer: null,
+      errorMessage: null,
+      events: [],
+      restored: false,
+    };
+    commitTurns([...turnsRef.current, pendingTurn]);
     setError(null);
     setAvailabilityError(null);
     setAvailabilityNotice(null);
     setAnswer(null);
     setStatus("Starting");
     setIsRunning(true);
+    const runEvents: TraceEvent[] = [];
     const terminal: { event: TraceEvent | null } = { event: null };
+    let runId: string | null = null;
+    const currentIntent = result?.intent ?? {};
+    const updateCurrentTurn = (updater: (turn: ThreadTurn) => ThreadTurn) => {
+      commitTurns(
+        turnsRef.current.map((turn) => (turn.id === turnId ? updater(turn) : turn)),
+      );
+    };
 
     try {
       const response = await streamRecommendations(
         {
-          message,
-          clientRequestId: window.crypto.randomUUID(),
+          message: text,
+          clientRequestId: requestId,
           conversationId: conversation?.id ?? null,
           expectedVersion: conversation?.version ?? null,
+          clarificationChoiceId: options.clarificationChoiceId ?? null,
+          filterEdit: options.filterEdit ?? null,
         },
         (nextEvent) => {
+          runEvents.push(nextEvent);
           setEvents((current) => [...current, nextEvent]);
           if (nextEvent.type === "failed") {
             terminal.event = nextEvent;
+            const failure = failureMessage(nextEvent);
             setStatus("Failed");
-            setError(failureMessage(nextEvent));
+            setError(failure);
+            updateCurrentTurn((turn) => ({
+              ...turn,
+              status: "Failed",
+              errorMessage: failure,
+              events: [...runEvents],
+            }));
             return;
           }
           if (nextEvent.type === "cancelled") {
             terminal.event = nextEvent;
             setStatus("Cancelled");
+            updateCurrentTurn((turn) => ({
+              ...turn,
+              status: "Cancelled",
+              events: [...runEvents],
+            }));
             return;
           }
           if (nextEvent.type === "needs_clarification") {
             terminal.event = nextEvent;
+            const normalized = normalizeResult(nextEvent.data, currentIntent);
             setStatus("Needs clarification");
-            if (nextEvent.data) {
-              setResult(nextEvent.data as unknown as RecommendationResult);
+            if (normalized) setResult(normalized);
+            updateCurrentTurn((turn) => ({
+              ...turn,
+              status: "Needs clarification",
+              result: normalized,
+              events: [...runEvents],
+            }));
+            return;
+          }
+          if (nextEvent.type === "recommendations") {
+            const normalized = normalizeResult(nextEvent.data, currentIntent);
+            if (normalized) {
+              setResult(normalized);
+              updateCurrentTurn((turn) => ({
+                ...turn,
+                result: normalized,
+                status: "Preparing results",
+                events: [...runEvents],
+              }));
             }
             return;
           }
-          setStatus(nextEvent.type.replaceAll("_", " "));
-          if (nextEvent.type === "recommendations" && nextEvent.data) {
-            setResult(nextEvent.data as unknown as RecommendationResult);
+          if (nextEvent.type === "completed") {
+            const nextAnswer =
+              typeof nextEvent.data?.answer === "string" ? nextEvent.data.answer : null;
+            if (nextAnswer) setAnswer(nextAnswer);
+            setStatus("Complete");
+            updateCurrentTurn((turn) => ({
+              ...turn,
+              status: "Complete",
+              answer: nextAnswer ?? turn.answer,
+              events: [...runEvents],
+            }));
+            return;
           }
-          if (
-            nextEvent.type === "completed" &&
-            typeof nextEvent.data?.answer === "string"
-          ) {
-            setAnswer(nextEvent.data.answer);
-          }
+          setStatus(statusLabel(nextEvent.type));
+          updateCurrentTurn((turn) => ({
+            ...turn,
+            status: statusLabel(nextEvent.type),
+            events: [...runEvents],
+          }));
         },
         controller.signal,
+        (ids) => {
+          runId = ids.runId;
+          updateCurrentTurn((turn) => ({ ...turn, runId: ids.runId }));
+        },
       );
+
       if (terminal.event?.type === "failed" || terminal.event?.type === "cancelled") return;
       const nextConversation = {
         id: response.conversationId,
@@ -255,26 +335,188 @@ export function RecommendationWorkspace() {
       };
       setConversation(nextConversation);
       saveConversation(nextConversation);
-      setMessage("");
-      setStatus(
-        terminal.event?.type === "needs_clarification" ? "Needs clarification" : "Complete",
-      );
+      const finalStatus =
+        terminal.event?.type === "needs_clarification" ? "Needs clarification" : "Complete";
+      setStatus(finalStatus);
+      updateCurrentTurn((turn) => ({ ...turn, status: finalStatus }));
+      saveLocalTurns(nextConversation.id, turnsRef.current);
+      if (options.clearPrompt !== false) setMessage("");
     } catch (reason) {
       if (terminal.event) return;
       if (controller.signal.aborted) {
         setStatus("Cancelled");
-      } else {
-        setStatus("Failed");
-        setError(requestErrorMessage(reason, "The recommendation request failed."));
+        updateCurrentTurn((turn) => ({ ...turn, status: "Cancelled" }));
+        return;
       }
+
+      let recovered = false;
+      if (runId) {
+        let supportsRunStatus = capabilities?.run_status === true;
+        if (!capabilities) {
+          const lateCapabilities = await getRecommendationCapabilities();
+          if (lateCapabilities) {
+            setCapabilities(lateCapabilities);
+            supportsRunStatus = lateCapabilities.run_status;
+          }
+        }
+        if (supportsRunStatus) {
+          setIsRecovering(true);
+          setStatus("Checking saved run");
+          try {
+            const recoveredRun = await getRunStatus(runId);
+            if (recoveredRun) {
+              recovered = true;
+              const recoveredEvents = Array.isArray(recoveredRun.events)
+                ? recoveredRun.events
+                : [];
+              if (recoveredEvents.length) {
+                setEvents((current) => mergeRunEvents(current, runId as string, recoveredEvents));
+              }
+              const recoveredResult = normalizeResult(recoveredRun.response, currentIntent);
+              const recoveredLabel = statusLabel(recoveredRun.status);
+              if (recoveredRun.status === "failed") {
+                const failedEvent = [...recoveredEvents]
+                  .reverse()
+                  .find((event) => event.type === "failed");
+                const failure = failedEvent
+                  ? failureMessage(failedEvent)
+                  : "The recommendation run could not be completed.";
+                setStatus("Failed");
+                setError(failure);
+                updateCurrentTurn((turn) => ({
+                  ...turn,
+                  status: "Failed",
+                  errorMessage: failure,
+                  events: recoveredEvents,
+                  runId,
+                }));
+              } else if (recoveredRun.status === "cancelled") {
+                setStatus("Cancelled");
+                updateCurrentTurn((turn) => ({
+                  ...turn,
+                  status: "Cancelled",
+                  events: recoveredEvents,
+                  runId,
+                }));
+              } else if (
+                recoveredRun.status === "completed" ||
+                recoveredRun.status === "needs_clarification"
+              ) {
+                if (recoveredResult) setResult(recoveredResult);
+                setStatus(recoveredLabel);
+                setError(null);
+                updateCurrentTurn((turn) => ({
+                  ...turn,
+                  status: recoveredLabel,
+                  result: recoveredResult ?? turn.result,
+                  events: recoveredEvents,
+                  runId,
+                }));
+                const nextConversation = {
+                  id: recoveredRun.conversation_id,
+                  version: recoveredRun.version,
+                };
+                setConversation(nextConversation);
+                saveConversation(nextConversation);
+                saveLocalTurns(nextConversation.id, turnsRef.current);
+              } else {
+                const notice = interruptionMessage(true);
+                setStatus("Interrupted");
+                setError(notice);
+                updateCurrentTurn((turn) => ({
+                  ...turn,
+                  status: "Interrupted",
+                  errorMessage: notice,
+                  events: recoveredEvents,
+                  runId,
+                }));
+              }
+            }
+          } catch {
+            recovered = false;
+          } finally {
+            setIsRecovering(false);
+          }
+        }
+      }
+      if (recovered) return;
+
+      const rawMessage = reason instanceof Error ? reason.message : "";
+      const networkInterruption =
+        Boolean(runId) ||
+        (/network|fetch|terminated|chunk|body/i.test(rawMessage) &&
+          !/status \d+/i.test(rawMessage));
+      const failure = networkInterruption
+        ? interruptionMessage(false)
+        : requestErrorMessage(reason, "The recommendation request failed.");
+      setStatus(networkInterruption ? "Interrupted" : "Failed");
+      setError(failure);
+      updateCurrentTurn((turn) => ({
+        ...turn,
+        status: networkInterruption ? "Interrupted" : "Failed",
+        errorMessage: failure,
+      }));
     } finally {
       setIsRunning(false);
     }
   }
 
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void submitTurn({ message });
+  }
+
+  function chooseClarification(option: ClarificationOption) {
+    const structured = capabilities?.structured_clarification === true;
+    void submitTurn({
+      message: choiceMessage(option),
+      clarificationChoiceId: structured ? option.choice_id : null,
+      clearPrompt: false,
+    });
+  }
+
+  function applyFilterEdit(edit: FilterEdit) {
+    const typed = capabilities?.filter_edit === true;
+    void submitTurn({
+      message: filterEditMessage(edit),
+      filterEdit: typed ? edit : null,
+      clearPrompt: false,
+    });
+  }
+
+  function relaxUnmetFilter(unmetFilter: string) {
+    const filters = result ? activeFilters(result.intent) : [];
+    const needle = unmetFilter.toLowerCase();
+    const matched = filters.find(
+      (filter) =>
+        filter.remove &&
+        (needle.includes(filter.group.toLowerCase()) ||
+          needle.includes(String(filter.value).toLowerCase()) ||
+          String(filter.value).toLowerCase().includes(needle)),
+    );
+    if (matched?.remove) {
+      applyFilterEdit(matched.remove);
+      return;
+    }
+    void submitTurn({
+      message: `Please relax this filter: ${unmetFilter}.`,
+      clearPrompt: false,
+    });
+  }
+
+  function focusActiveFilters() {
+    const node = document.getElementById("active-filters");
+    node?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    node?.focus({ preventScroll: true });
+  }
+
   function startNewConversation() {
     abortRef.current?.abort();
+    if (conversation?.id) clearLocalTurns(conversation.id);
     setConversation(null);
+    setTurns([]);
+    turnsRef.current = [];
+    setHistoryRestored(false);
     setResult(null);
     setAnswer(null);
     setEvents([]);
@@ -301,12 +543,18 @@ export function RecommendationWorkspace() {
       setConversation(nextConversation);
       saveConversation(nextConversation);
       if (snapshot.result) {
-        setResult({
-          ...snapshot.result,
-          intent: snapshot.intent,
-          issues: snapshot.issues ?? [],
-          provider_lookups: snapshot.provider_lookups ?? [],
-        });
+        const refreshed = normalizeResult(
+          {
+            ...snapshot.result,
+            intent: snapshot.intent,
+            clarification: snapshot.clarification ?? undefined,
+            clarification_options: snapshot.clarification_options,
+            issues: snapshot.issues ?? [],
+            provider_lookups: snapshot.provider_lookups ?? [],
+          },
+          snapshot.intent,
+        );
+        if (refreshed) setResult(refreshed);
       }
       setAvailabilityNotice(`Streaming availability updated for ${countryName(country)}.`);
       return true;
@@ -373,44 +621,39 @@ export function RecommendationWorkspace() {
         </form>
       </section>
 
-      <section className="trace" aria-labelledby="trace-heading">
-        <div className="traceHeader">
-          <h2 id="trace-heading">Search progress</h2>
-          <span aria-live="polite" data-testid="status" role="status">
-            {status}
-          </span>
-        </div>
-        {error ? <p role="alert">{error}</p> : null}
-        {answer ? <p className="conversationAnswer" role="status">{answer}</p> : null}
-        {events.length === 0 ? (
-          <p className="empty">Your search steps will appear here.</p>
-        ) : (
-          <ol aria-live="polite" aria-relevant="additions">
-            {events.map((event) => (
-              <li key={event.event_id}>
-                <div className="traceLabels">
-                  <span className="traceStage">{event.stage}</span>
-                  <span className="traceOrigin" data-origin={event.origin}>
-                    {event.origin === "agent" ? "Agent" : "Application"}
-                  </span>
-                  <span className="traceType">{eventTypeLabel(event.type)}</span>
-                </div>
-                <p>{event.summary}</p>
-              </li>
-            ))}
-          </ol>
-        )}
-      </section>
+      <ConversationThread historyRestored={historyRestored} turns={turns} />
+
+      <ProgressTrace
+        error={error}
+        events={events}
+        isRunning={isRunning || isRecovering}
+        status={isRecovering ? "Checking saved run" : status}
+      />
+      {answer ? (
+        <p className="conversationAnswer" role="status">
+          {answer}
+        </p>
+      ) : null}
 
       {result ? (
-        <Results
-          error={availabilityError}
-          isRefreshing={isRefreshingAvailability}
-          isRunning={isRunning}
-          notice={availabilityNotice}
-          onCountryChange={changeAvailabilityCountry}
-          result={result}
-        />
+        <>
+          <ActiveFilters
+            disabled={isRunning}
+            intent={result.intent}
+            onApplyEdit={applyFilterEdit}
+          />
+          <RecommendationResults
+            error={availabilityError}
+            isRefreshing={isRefreshingAvailability}
+            isRunning={isRunning}
+            notice={availabilityNotice}
+            onChooseClarification={chooseClarification}
+            onCountryChange={changeAvailabilityCountry}
+            onEditFilters={focusActiveFilters}
+            onRelaxFilter={relaxUnmetFilter}
+            result={result}
+          />
+        </>
       ) : null}
       <footer className="attribution" aria-label="Credits">
         <a href="https://www.themoviedb.org/" rel="noreferrer" target="_blank">
@@ -431,268 +674,4 @@ export function RecommendationWorkspace() {
       </footer>
     </main>
   );
-}
-
-const COUNTRY_OPTIONS = [
-  ["RO", "Romania"],
-  ["US", "United States"],
-  ["GB", "United Kingdom"],
-  ["CA", "Canada"],
-  ["AU", "Australia"],
-  ["NZ", "New Zealand"],
-  ["DE", "Germany"],
-  ["FR", "France"],
-  ["ES", "Spain"],
-  ["IT", "Italy"],
-  ["NL", "Netherlands"],
-  ["IE", "Ireland"],
-  ["JP", "Japan"],
-  ["KR", "South Korea"],
-  ["IN", "India"],
-  ["BR", "Brazil"],
-] as const;
-
-function Results({
-  result,
-  error,
-  isRefreshing,
-  isRunning,
-  notice,
-  onCountryChange,
-}: {
-  result: RecommendationResult;
-  error: string | null;
-  isRefreshing: boolean;
-  isRunning: boolean;
-  notice: string | null;
-  onCountryChange: (country: string) => Promise<boolean>;
-}) {
-  const savedCountry =
-    typeof result.intent?.country === "string" && /^[A-Z]{2}$/.test(result.intent.country)
-      ? result.intent.country
-      : "RO";
-  const countryPickerRef = useRef<HTMLSelectElement>(null);
-
-  useEffect(() => {
-    if (countryPickerRef.current) countryPickerRef.current.value = savedCountry;
-  }, [savedCountry]);
-
-  async function selectCountry(country: string) {
-    if (isRefreshing || isRunning) {
-      if (countryPickerRef.current) countryPickerRef.current.value = savedCountry;
-      return;
-    }
-    const updated = await onCountryChange(country);
-    if (!updated && countryPickerRef.current) countryPickerRef.current.value = savedCountry;
-  }
-
-  return (
-    <section className="results" aria-labelledby="results-heading">
-      <div className="resultsHeading">
-        <div>
-          <p className="eyebrow">Your shortlist</p>
-          <h2 id="results-heading">
-            {result.clarification
-              ? "A little more detail needed"
-              : `${result.recommendations.length} of ${result.requested_count} picks`}
-          </h2>
-        </div>
-        {result.recommendations.length ? (
-          <div className="countryPicker">
-            <label htmlFor="availability-country">Streaming availability country</label>
-            <select
-              aria-disabled={isRefreshing || isRunning}
-              defaultValue={savedCountry}
-              disabled={isRunning}
-              id="availability-country"
-              onChange={(event) => void selectCountry(event.target.value)}
-              ref={countryPickerRef}
-            >
-              {!COUNTRY_OPTIONS.some(([code]) => code === savedCountry) ? (
-                <option value={savedCountry}>{savedCountry}</option>
-              ) : null}
-              {COUNTRY_OPTIONS.map(([code, label]) => (
-                <option key={code} value={code}>
-                  {label} ({code})
-                </option>
-              ))}
-            </select>
-            <span aria-live="polite" className="countryStatus">
-              {isRefreshing
-                ? "Refreshing providers…"
-                : isRunning
-                  ? "Wait for the current search to finish."
-                  : notice ?? "Provider lookup only; movie picks stay the same."}
-            </span>
-          </div>
-        ) : null}
-      </div>
-      {error ? <p className="availabilityError" role="alert">{error}</p> : null}
-      {result.shortfall_reason ? (
-        <p className="shortfall" role="status">
-          {result.shortfall_reason}
-        </p>
-      ) : null}
-      {result.clarification ? (
-        <p className="clarification shortfall" role="status">
-          {result.clarification}
-        </p>
-      ) : null}
-      {result.recommendations.length ? (
-        <div className="movieGrid">
-          {result.recommendations.map((recommendation) => (
-            <MovieCard
-              key={recommendation.movie.tmdb_id}
-              providerLookup={(result.provider_lookups ?? []).find(
-                (lookup) => lookup.tmdb_id === recommendation.movie.tmdb_id,
-              )}
-              recommendation={recommendation}
-            />
-          ))}
-        </div>
-      ) : result.clarification ? null : (
-        <p className="empty">No verified matches yet. Try loosening one of the filters.</p>
-      )}
-    </section>
-  );
-}
-
-function MovieCard({
-  recommendation,
-  providerLookup,
-}: {
-  recommendation: RecommendationCard;
-  providerLookup?: ProviderLookup;
-}) {
-  const movie = recommendation.movie;
-  const ratings = movie.ratings ?? [];
-  const tmdbRating = ratings.find((item) => item.source === "tmdb");
-  const externalRatings = ratings.filter(
-    (item) => item.source !== "tmdb" && item.value != null,
-  );
-  const genres = movie.genres ?? [];
-  const providerGroups = movie.watch_options
-    ? [
-        ["Subscription", movie.watch_options.subscription],
-        ["Free", movie.watch_options.free],
-        ["With ads", movie.watch_options.ads],
-        ["Rent", movie.watch_options.rent],
-        ["Buy", movie.watch_options.buy],
-      ] as const
-    : [];
-  const caveats = providerLookup
-    ? recommendation.caveats.filter((caveat) => !/provider|availability/i.test(caveat))
-    : recommendation.caveats;
-
-  return (
-    <article className="movieCard">
-      <a className="poster" href={movie.tmdb_url} rel="noreferrer" target="_blank">
-        {movie.poster_url ? (
-          <span
-            aria-label={`${movie.title} poster`}
-            className="posterImage"
-            role="img"
-            style={{ backgroundImage: `url("${movie.poster_url}")` }}
-          />
-        ) : (
-          <span className="posterFallback">Poster unavailable</span>
-        )}
-      </a>
-      <div className="movieInfo">
-        <p className="movieMeta">
-          {movie.release_year ?? "Year unknown"}
-          {movie.runtime_minutes ? ` · ${movie.runtime_minutes} min` : ""}
-        </p>
-        <h3>
-          <a href={movie.tmdb_url} rel="noreferrer" target="_blank">
-            {movie.title}
-          </a>
-        </h3>
-        <p className="movieGenres">
-          {genres.length ? genres.join(" · ") : "Genres not listed."}
-        </p>
-        <div className="movieRatings">
-          <p className="movieRating">
-            TMDB ·{" "}
-            {tmdbRating?.value == null
-              ? "Not rated"
-              : ratingValue(tmdbRating.value, tmdbRating.scale)}
-            {tmdbRating?.vote_count
-              ? ` · ${tmdbRating.vote_count.toLocaleString()} votes`
-              : ""}
-          </p>
-          {externalRatings.map((rating) => (
-            <p className="externalRating" key={rating.source}>
-              {ratingLabel(rating.source)} · {ratingValue(rating.value as number, rating.scale)}
-              {rating.vote_count ? ` · ${rating.vote_count.toLocaleString()} votes` : ""}
-            </p>
-          ))}
-        </div>
-        <p className="movieOverview">{movie.overview || "No overview available."}</p>
-        <p className="matchReason">{recommendation.match_reason}</p>
-        <p className="movieLinks">
-          <a href={movie.tmdb_url} rel="noreferrer" target="_blank">
-            TMDB page
-          </a>
-          {movie.imdb_url ? (
-            <a href={movie.imdb_url} rel="noreferrer" target="_blank">
-              IMDb page
-            </a>
-          ) : null}
-        </p>
-        <ProviderAvailability lookup={providerLookup} />
-        {providerGroups.map(([label, providers]) =>
-          providers.length ? (
-            <p className="providers" key={label}>
-              <strong>{label}:</strong>
-              {providers.map((provider) => (
-                <span className="providerBadge" key={provider.provider_id}>
-                  {provider.logo_path ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      alt=""
-                      height={24}
-                      loading="lazy"
-                      src={`https://image.tmdb.org/t/p/w92${provider.logo_path}`}
-                      width={24}
-                    />
-                  ) : null}
-                  {provider.name}
-                </span>
-              ))}
-            </p>
-          ) : null,
-        )}
-        {caveats.map((caveat) => (
-          <p className="caveat" key={caveat}>
-            {caveat}
-          </p>
-        ))}
-      </div>
-    </article>
-  );
-}
-
-function ProviderAvailability({ lookup }: { lookup?: ProviderLookup }) {
-  if (!lookup) return null;
-  if (lookup.outcome === "error") {
-    return (
-      <p className="availability availabilityError">
-        Availability lookup failed for {lookup.country}. Streaming options are unknown.
-      </p>
-    );
-  }
-  if (lookup.outcome === "no_data") {
-    return (
-      <p className="availability">
-        No provider data for {lookup.country}. This does not mean the movie is unavailable.
-      </p>
-    );
-  }
-  if (lookup.provider_count === 0) {
-    return (
-      <p className="availability">No streaming providers listed for {lookup.country}.</p>
-    );
-  }
-  return null;
 }

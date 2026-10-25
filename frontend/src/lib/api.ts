@@ -63,6 +63,32 @@ export type RecommendationCard = {
   };
 };
 
+export type ClarificationOption = {
+  choice_id: string;
+  kind: "person" | "title";
+  label: string;
+  detail: string;
+};
+
+export type AlternativeRecommendation = {
+  recommendation: RecommendationCard;
+  unmet_filters: string[];
+};
+
+export type FilterEdit = {
+  field: string;
+  operation: "set" | "remove" | "clear";
+  value?: string | number;
+};
+
+export type RecommendationCapabilities = {
+  history: boolean;
+  structured_clarification: boolean;
+  filter_edit: boolean;
+  alternatives: boolean;
+  run_status: boolean;
+};
+
 export type RecommendationResult = {
   intent: Record<string, unknown>;
   recommendations: RecommendationCard[];
@@ -77,6 +103,17 @@ export type RecommendationResult = {
     provider_count: number;
     detail?: string | null;
   }[];
+  alternatives?: AlternativeRecommendation[];
+  clarification_options?: ClarificationOption[];
+};
+
+export type ConversationTurn = {
+  run_id: string;
+  user_message: string;
+  status: string;
+  response: RecommendationResult | null;
+  answer: string | null;
+  events: TraceEvent[];
 };
 
 export type ConversationSnapshot = {
@@ -84,13 +121,26 @@ export type ConversationSnapshot = {
   version: number;
   intent: Record<string, unknown>;
   clarification?: string | null;
+  clarification_options?: ClarificationOption[];
+  turns?: ConversationTurn[];
   result: {
     recommendations: RecommendationCard[];
     requested_count: number;
     shortfall_reason: string | null;
+    alternatives?: AlternativeRecommendation[];
+    clarification_options?: ClarificationOption[];
   } | null;
   issues: { code: string; message: string; field: string | null; tmdb_id: number | null }[];
   provider_lookups: RecommendationResult["provider_lookups"];
+};
+
+export type RunStatusSnapshot = {
+  run_id: string;
+  conversation_id: string;
+  status: string;
+  version: number;
+  events: TraceEvent[];
+  response: RecommendationResult | null;
 };
 
 export async function getConversation(conversationId: string): Promise<ConversationSnapshot | null> {
@@ -100,6 +150,33 @@ export async function getConversation(conversationId: string): Promise<Conversat
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`Conversation lookup failed with status ${response.status}`);
   return (await response.json()) as ConversationSnapshot;
+}
+
+export async function getRecommendationCapabilities(): Promise<RecommendationCapabilities | null> {
+  try {
+    const response = await fetch("/api/recommendations/capabilities", { cache: "no-store" });
+    if (!response.ok) return null;
+    const raw = (await response.json()) as Partial<RecommendationCapabilities> | null;
+    if (!raw) return null;
+    return {
+      history: raw.history === true,
+      structured_clarification: raw.structured_clarification === true,
+      filter_edit: raw.filter_edit === true,
+      alternatives: raw.alternatives === true,
+      run_status: raw.run_status === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function getRunStatus(runId: string): Promise<RunStatusSnapshot | null> {
+  const response = await fetch(`/api/recommendations/runs/${encodeURIComponent(runId)}`, {
+    cache: "no-store",
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Run status lookup failed with status ${response.status}`);
+  return (await response.json()) as RunStatusSnapshot;
 }
 
 export async function refreshConversationAvailability(
@@ -125,9 +202,12 @@ export async function streamRecommendations(
     clientRequestId: string;
     conversationId: string | null;
     expectedVersion: number | null;
+    clarificationChoiceId?: string | null;
+    filterEdit?: FilterEdit | null;
   },
   onEvent: (event: TraceEvent) => void,
   signal?: AbortSignal,
+  onStart?: (ids: { conversationId: string; runId: string }) => void,
 ): Promise<{ conversationId: string; runId: string }> {
   const response = await fetch("/api/recommendations/stream", {
     method: "POST",
@@ -137,6 +217,10 @@ export async function streamRecommendations(
       client_request_id: input.clientRequestId,
       conversation_id: input.conversationId,
       expected_version: input.expectedVersion,
+      ...(input.clarificationChoiceId
+        ? { clarification_choice_id: input.clarificationChoiceId }
+        : {}),
+      ...(input.filterEdit ? { filter_edit: input.filterEdit } : {}),
     }),
     signal,
   });
@@ -149,6 +233,7 @@ export async function streamRecommendations(
   const conversationId = response.headers.get("x-conversation-id");
   const runId = response.headers.get("x-run-id");
   if (!conversationId || !runId) throw new Error("Recommendation response omitted run identifiers");
+  onStart?.({ conversationId, runId });
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();

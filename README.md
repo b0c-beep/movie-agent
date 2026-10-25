@@ -53,6 +53,12 @@ Detailed planning and agent working memory remain local to the development works
 
 ## Development
 
+### Conversation workspace and usage
+
+The workspace keeps each tab's conversation separate. A same-tab reload restores the saved conversation and, when the backend supplies bounded `turns`, its ordered user/agent thread and retained progress events. With an older backend that has no turn history, the page keeps only turns observed in the current tab and says so instead of claiming restored history. New Phase 4 fields and endpoints are optional: missing clarification options, alternatives, filter editing, or run-status recovery fall back to the existing clarification text, plain recommendations, natural-language follow-ups, and a safe manual retry.
+
+The progress panel is a compact, scrollable trace across turns. It starts at the newest events, follows new events only while you are already at the bottom, and keeps your position when you scroll back. Clarification choices, active-filter edits, exact results, closest alternatives, and unmet filters are labeled separately so relaxed picks are never presented as exact matches. Rate limiting is reported with a wait-and-retry hint; if the live stream drops, the app may read the saved owned-run status but never resubmits the paid request automatically. The page remains usable without client-side access to any provider or database secret.
+
 Prerequisites: Python 3.13, [uv](https://docs.astral.sh/uv/), Node.js 20.9 or newer, and npm. Install pinned dependencies from their lockfiles:
 
 ```bash
