@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 
 test("unlocks the app and displays streamed grounded recommendations", async ({ page }) => {
+  let streamCalls = 0;
+  const availabilityRequests: { country: string; expected_version: number }[] = [];
   await page.route("**/api/auth/session", (route) =>
     route.fulfill({ status: 401, contentType: "application/json", body: '{"detail":"locked"}' }),
   );
@@ -15,7 +17,34 @@ test("unlocks the app and displays streamed grounded recommendations", async ({ 
       }),
     }),
   );
+  const recommendation = {
+    rank: 1,
+    match_reason: "TMDB lists this as science fiction.",
+    matched_constraints: ["genre:Science Fiction"],
+    caveats: [],
+    movie: {
+      tmdb_id: 603,
+      title: "The Matrix",
+      release_year: 1999,
+      runtime_minutes: 136,
+      genres: ["Science Fiction"],
+      overview: "A hacker discovers a simulated world.",
+      poster_url: null,
+      tmdb_url: "https://www.themoviedb.org/movie/603",
+      imdb_url: null,
+      ratings: [{ source: "tmdb", value: 8.2, scale: "10", vote_count: 100 }],
+      watch_options: {
+        country: "RO",
+        subscription: [{ provider_id: 8, name: "Netflix", logo_path: "/netflix.jpg" }],
+        free: [],
+        ads: [],
+        rent: [],
+        buy: [],
+      },
+    },
+  };
   await page.route("**/api/recommendations/stream", (route) => {
+    streamCalls += 1;
     const runId = "fixture-run";
     const now = "2026-10-25T12:00:00Z";
     const event = (
@@ -37,32 +66,6 @@ test("unlocks the app and displays streamed grounded recommendations", async ({ 
         metadata: {},
         data,
       })}\n\n`;
-    const recommendation = {
-      rank: 1,
-      match_reason: "TMDB lists this as science fiction.",
-      matched_constraints: ["genre:Science Fiction"],
-      caveats: [],
-      movie: {
-        tmdb_id: 603,
-        title: "The Matrix",
-        release_year: 1999,
-        runtime_minutes: 136,
-        genres: ["Science Fiction"],
-        overview: "A hacker discovers a simulated world.",
-        poster_url: null,
-        tmdb_url: "https://www.themoviedb.org/movie/603",
-        imdb_url: null,
-        ratings: [{ source: "tmdb", value: 8.2, scale: "10", vote_count: 100 }],
-        watch_options: {
-          country: "RO",
-          subscription: [{ provider_id: 8, name: "Netflix", logo_path: "/netflix.jpg" }],
-          free: [],
-          ads: [],
-          rent: [],
-          buy: [],
-        },
-      },
-    };
     const frames = [
       event(1, "run_started", "predict", "Starting a protected movie search"),
       event(2, "recommendations", "complete", "Prepared one grounded recommendation", {
@@ -85,16 +88,43 @@ test("unlocks the app and displays streamed grounded recommendations", async ({ 
       body: frames,
     });
   });
-  await page.route("**/api/recommendations/conversations/**", (route) =>
+  const snapshot = {
+    conversation_id: "fixture-conversation",
+    version: 2,
+    intent: { requested_count: 1, country: "RO" },
+    result: {
+      recommendations: [recommendation],
+      requested_count: 1,
+      shortfall_reason: null,
+    },
+    issues: [],
+    provider_lookups: [
+      { tmdb_id: 603, country: "RO", outcome: "ok", provider_count: 1, detail: null },
+    ],
+  };
+  await page.route("**/api/recommendations/conversations/fixture-conversation/availability", async (route) => {
+    availabilityRequests.push(route.request().postDataJSON());
+    const updated = structuredClone(snapshot);
+    updated.version = 3;
+    updated.intent.country = "US";
+    updated.result.recommendations[0].movie.watch_options = {
+      country: "US",
+      subscription: [{ provider_id: 9, name: "Max", logo_path: "/max.jpg" }],
+      free: [],
+      ads: [],
+      rent: [],
+      buy: [],
+    };
+    updated.provider_lookups = [
+      { tmdb_id: 603, country: "US", outcome: "ok", provider_count: 1, detail: null },
+    ];
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(updated) });
+  });
+  await page.route("**/api/recommendations/conversations/fixture-conversation", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        conversation_id: "fixture-conversation",
-        version: 2,
-        intent: { requested_count: 1 },
-        result: null,
-      }),
+      body: JSON.stringify(snapshot),
     }),
   );
   await page.goto("/");
@@ -111,6 +141,13 @@ test("unlocks the app and displays streamed grounded recommendations", async ({ 
     "https://image.tmdb.org/t/p/w92/netflix.jpg",
   );
   await expect(page.locator(".trace li")).toHaveCount(3);
+  await page.getByLabel("Streaming availability country").selectOption("US");
+  await expect(page.locator(".providers")).toContainText("Max");
+  expect(availabilityRequests).toEqual([{ country: "US", expected_version: 2 }]);
+  expect(streamCalls).toBe(1);
+  await expect
+    .poll(() => page.evaluate(() => sessionStorage.getItem("movie-agent-conversation")))
+    .toBe(JSON.stringify({ id: "fixture-conversation", version: 3 }));
 });
 
 test("shows streamed failures and keeps the saved conversation version", async ({ page }) => {

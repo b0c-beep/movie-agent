@@ -10,6 +10,7 @@ from movie_agent.agent.recommendations import (
     ProviderLookupOutcome,
     assemble_recommendations,
     merge_intent,
+    refresh_recommendation_availability,
 )
 from movie_agent.models.intent import (
     MovieIntent,
@@ -18,7 +19,7 @@ from movie_agent.models.intent import (
     StringCollectionPatch,
     TurnKind,
 )
-from movie_agent.models.movies import RatingSource
+from movie_agent.models.movies import Rating, RatingSource, RecommendationBatch
 from movie_agent.models.tmdb import (
     TmdbCastMember,
     TmdbCrewMember,
@@ -32,6 +33,7 @@ from movie_agent.models.tmdb import (
     TmdbWatchOptions,
     TmdbWatchProvider,
 )
+from movie_agent.services.omdb import OmdbLookupStatus, OmdbRatings
 from movie_agent.services.tmdb import TmdbError
 
 
@@ -627,6 +629,109 @@ async def test_provider_no_data_and_failure_are_distinguished() -> None:
     assert any("no watch-provider data" in caveat for caveat in recommendations[0].caveats)
     assert any("lookup failed" in caveat for caveat in recommendations[1].caveats)
     assert result.batch.shortfall_reason is None
+
+
+@pytest.mark.asyncio
+async def test_country_refresh_requeries_only_providers_and_preserves_movie_facts() -> None:
+    intent = MovieIntent(moods=["Cozy"], requested_count=2)
+    pages = {1: _page(1, 1, [_candidate(1), _candidate(2)])}
+    details = {1: _details(1, rating=8.1), 2: _details(2, rating=7.2)}
+    initial_providers = {
+        1: _watch(subscription=[_provider(8, "RO Streamer")]),
+        2: _watch(subscription=[_provider(9, "RO Cinema")]),
+    }
+    client = FakeTmdbClient(pages=pages, details=details, providers=initial_providers)
+    initial = await assemble_recommendations(client, intent)
+    initial_discover_calls = list(client.discover_calls)
+    initial_detail_calls = list(client.detail_calls)
+    initial_calls = len(client.provider_calls)
+    client.providers = {
+        1: _watch(country="US", subscription=[_provider(18, "US Streamer")]),
+        2: TmdbError("provider lookup failed"),
+    }
+
+    refreshed = await refresh_recommendation_availability(client, initial.batch, country="us")
+
+    assert client.discover_calls == initial_discover_calls
+    assert client.detail_calls == initial_detail_calls
+    assert client.provider_calls[initial_calls:] == [(1, "US"), (2, "US")]
+    assert [item.movie.tmdb_id for item in refreshed.batch.recommendations] == [1, 2]
+    assert [item.rank for item in refreshed.batch.recommendations] == [1, 2]
+    assert [item.movie.ratings[0].value for item in refreshed.batch.recommendations] == [8.1, 7.2]
+    assert all(
+        any("Mood preferences are not verified" in caveat for caveat in item.caveats)
+        for item in refreshed.batch.recommendations
+    )
+    assert refreshed.batch.recommendations[0].movie.watch_options is not None
+    assert refreshed.batch.recommendations[0].movie.watch_options.country == "US"
+    assert (
+        refreshed.batch.recommendations[0].movie.watch_options.subscription[0].name == "US Streamer"
+    )
+    assert refreshed.batch.recommendations[1].movie.watch_options is None
+    assert any("lookup failed" in caveat for caveat in refreshed.batch.recommendations[1].caveats)
+    assert [lookup.outcome for lookup in refreshed.provider_lookups] == [
+        ProviderLookupOutcome.OK,
+        ProviderLookupOutcome.ERROR,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_country_refresh_rejects_invalid_country() -> None:
+    client = FakeTmdbClient()
+    with pytest.raises(ValueError, match="ISO 3166"):
+        await refresh_recommendation_availability(
+            client,
+            RecommendationBatch(recommendations=[], requested_count=1),
+            country="USA",
+        )
+
+
+@pytest.mark.asyncio
+async def test_omdb_enrichment_adds_external_scores_and_degrades_on_failure() -> None:
+    class FakeOmdbClient:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+            self.fail = False
+
+        async def get_ratings_for_ids(self, imdb_ids: Sequence[str]) -> list[OmdbRatings]:
+            self.calls.append(list(imdb_ids))
+            if self.fail:
+                raise RuntimeError("private provider failure detail")
+            return [
+                OmdbRatings(
+                    imdb_id="tt0133093",
+                    status=OmdbLookupStatus.OK,
+                    imdb=Rating(source=RatingSource.IMDB, value=8.7, scale="10"),
+                    rotten_tomatoes=Rating(
+                        source=RatingSource.ROTTEN_TOMATOES,
+                        value=83,
+                        scale="100",
+                    ),
+                )
+            ]
+
+    tmdb = FakeTmdbClient(
+        pages={1: _page(1, 1, [_candidate(603)])},
+        details={603: _details(603, imdb_id="tt0133093", rating=8.2)},
+    )
+    omdb = FakeOmdbClient()
+
+    enriched = await assemble_recommendations(tmdb, MovieIntent(requested_count=1), omdb=omdb)
+
+    assert omdb.calls == [["tt0133093"]]
+    ratings = enriched.batch.recommendations[0].movie.ratings
+    assert [(rating.source, rating.value, rating.scale) for rating in ratings] == [
+        (RatingSource.TMDB, 8.2, "10"),
+        (RatingSource.IMDB, 8.7, "10"),
+        (RatingSource.ROTTEN_TOMATOES, 83, "100"),
+    ]
+
+    omdb.fail = True
+    degraded = await assemble_recommendations(tmdb, MovieIntent(requested_count=1), omdb=omdb)
+    degraded_ratings = degraded.batch.recommendations[0].movie.ratings
+    assert [(rating.source, rating.value) for rating in degraded_ratings] == [
+        (RatingSource.TMDB, 8.2)
+    ]
 
 
 @pytest.mark.asyncio
