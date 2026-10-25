@@ -12,7 +12,7 @@ import re
 from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from enum import StrEnum
-from typing import Final
+from typing import Final, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, ValidationError
 
@@ -40,6 +40,7 @@ from movie_agent.models.tmdb import (
     TmdbWatchOptions,
     TmdbWatchProvider,
 )
+from movie_agent.services.omdb import OmdbLookupStatus, OmdbRatings
 from movie_agent.services.tmdb import TmdbClient, TmdbError
 
 MAX_DISCOVERY_PAGES: Final = 3
@@ -153,6 +154,10 @@ class RecommendationAssembly(BaseModel):
     provider_lookups: list[ProviderLookup] = Field(default_factory=list)
 
 
+class ExternalRatingsClient(Protocol):
+    async def get_ratings_for_ids(self, imdb_ids: Sequence[str]) -> list[OmdbRatings]: ...
+
+
 def merge_intent(
     prior: MovieIntent,
     patch: MovieIntentPatch,
@@ -251,6 +256,7 @@ async def assemble_recommendations(
     intent: MovieIntent,
     *,
     excluded_tmdb_ids: Sequence[int] = (),
+    omdb: ExternalRatingsClient | None = None,
 ) -> RecommendationAssembly:
     """Assemble at most ``requested_count`` verified recommendations.
 
@@ -383,10 +389,121 @@ async def assemble_recommendations(
         requested_count=intent.requested_count,
         shortfall_reason=shortfall_reason,
     )
+    if omdb is not None:
+        batch = await _enrich_external_ratings(batch, omdb)
     return RecommendationAssembly(
         batch=batch,
         issues=issues,
         provider_lookups=provider_lookups,
+    )
+
+
+async def _enrich_external_ratings(
+    batch: RecommendationBatch,
+    client: ExternalRatingsClient,
+) -> RecommendationBatch:
+    imdb_ids_by_movie: dict[int, str] = {}
+    for recommendation in batch.recommendations:
+        imdb_url = recommendation.movie.imdb_url
+        match = _IMDB_ID_PATTERN.search(str(imdb_url)) if imdb_url is not None else None
+        if match is not None:
+            imdb_ids_by_movie[recommendation.movie.tmdb_id] = match.group(0)
+
+    ordered_ids = list(dict.fromkeys(imdb_ids_by_movie.values()))[:10]
+    if not ordered_ids:
+        return batch
+
+    try:
+        lookups = await client.get_ratings_for_ids(ordered_ids)
+    except Exception:
+        # OMDb is optional enrichment; it must never fail a grounded TMDB batch.
+        return batch
+    by_imdb_id = {result.imdb_id: result for result in lookups}
+
+    enriched: list[Recommendation] = []
+    for recommendation in batch.recommendations:
+        imdb_id = imdb_ids_by_movie.get(recommendation.movie.tmdb_id)
+        lookup = by_imdb_id.get(imdb_id) if imdb_id is not None else None
+        ratings = [
+            rating for rating in recommendation.movie.ratings if rating.source is RatingSource.TMDB
+        ]
+        if lookup is not None and lookup.status is OmdbLookupStatus.OK:
+            if lookup.imdb is not None:
+                ratings.append(lookup.imdb)
+            if lookup.rotten_tomatoes is not None:
+                ratings.append(lookup.rotten_tomatoes)
+        enriched.append(
+            recommendation.model_copy(
+                update={"movie": recommendation.movie.model_copy(update={"ratings": ratings})}
+            )
+        )
+    return batch.model_copy(update={"recommendations": enriched})
+
+
+async def refresh_recommendation_availability(
+    client: TmdbClient,
+    batch: RecommendationBatch,
+    *,
+    country: str,
+) -> RecommendationAssembly:
+    """Refresh only watch-provider data for existing grounded recommendations.
+
+    This deliberately does not discover titles, fetch movie details, or invoke an
+    LLM. Recommendation order, facts, match reasons, and shortfall are preserved.
+    """
+
+    normalized_country = country.strip().upper()
+    if re.fullmatch(r"[A-Z]{2}", normalized_country) is None:
+        raise ValueError("country must be an ISO 3166-1 alpha-2 code")
+
+    async def load_provider(
+        recommendation: Recommendation,
+    ) -> tuple[WatchOptions | None, ProviderLookup, list[str]]:
+        return await _load_provider_data(
+            client,
+            tmdb_id=recommendation.movie.tmdb_id,
+            country=normalized_country,
+        )
+
+    provider_results = await _gather_bounded(batch.recommendations, load_provider)
+    recommendations: list[Recommendation] = []
+    provider_lookups: list[ProviderLookup] = []
+    for recommendation, (watch_options, lookup, provider_caveats) in zip(
+        batch.recommendations,
+        provider_results,
+        strict=True,
+    ):
+        provider_lookups.append(lookup)
+        retained_caveats = [
+            caveat for caveat in recommendation.caveats if not _is_provider_caveat(caveat)
+        ]
+        caveats = _dedupe_texts([*retained_caveats, *provider_caveats])[:MAX_CAVEATS]
+        recommendations.append(
+            recommendation.model_copy(
+                update={
+                    "movie": recommendation.movie.model_copy(
+                        update={"watch_options": watch_options}
+                    ),
+                    "caveats": caveats,
+                }
+            )
+        )
+
+    refreshed = RecommendationBatch(
+        recommendations=recommendations,
+        requested_count=batch.requested_count,
+        shortfall_reason=batch.shortfall_reason,
+    )
+    return RecommendationAssembly(batch=refreshed, provider_lookups=provider_lookups)
+
+
+def _is_provider_caveat(caveat: str) -> bool:
+    normalized = caveat.casefold()
+    return (
+        "watch-provider" in normalized
+        or "watch providers" in normalized
+        or "provider data" in normalized
+        or "availability is unknown" in normalized
     )
 
 
