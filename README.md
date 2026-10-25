@@ -2,7 +2,7 @@
 
 Movie Agent helps answer the deceptively difficult question: **what should I watch tonight?** It turns conversational requests such as “give me three 1990s dark romances” or “an action movie with Sylvester Stallone” into grounded, country-aware recommendations.
 
-> Status: Phase 2 is complete. Phase 3 is in progress on `main` at `5f8a332`, including per-tab conversations, new-tab passcode prompts, richer cards and trace labels, and a 4,500-token intent extraction budget. A post-merge production smoke at this revision completed a synthetic recommendation request. Current unmerged Phase 3 work adds country-only availability refresh, optional OMDb ratings, and answers about saved cards; it is awaiting checks and review.
+> Status: Phase 2 is complete. Phase 3 is in progress on `main` at `5f8a332`, including per-tab conversations, new-tab passcode prompts, richer cards and trace labels, and a 4,500-token intent extraction budget. A post-merge production smoke at this revision completed a synthetic recommendation request. Current Phase 3 work adds country-only availability refresh, optional OMDb ratings, and answers about saved cards; local checks pass and the changes are pending owner review.
 
 ## Planned Product Experience
 
