@@ -2,7 +2,7 @@
 
 Movie Agent helps answer the deceptively difficult question: **what should I watch tonight?** It turns conversational requests such as “give me three 1990s dark romances” or “an action movie with Sylvester Stallone” into grounded, country-aware recommendations.
 
-> Status: foundation implementation. The first working release is targeted for Tuesday, October 27, 2026.
+> Status: foundation and deployment transport verified. Real recommendation behavior is still being built for the first working release targeted for Tuesday, October 27, 2026.
 
 ## Planned Product Experience
 
@@ -28,7 +28,7 @@ FastAPI + Pydantic AI
         └── Supabase: conversations, runs, traces, cache
 ```
 
-The LLM plans and ranks; provider APIs supply movie facts. Pydantic models validate every tool boundary, and application code rechecks hard constraints before presenting results. Each visitor gets a distinct anonymous session. The portable backend's initial hosting and streaming integration will be verified during scaffolding.
+The LLM plans and ranks; provider APIs supply movie facts. Pydantic models validate every tool boundary, and application code rechecks hard constraints before presenting results. Each visitor will get a distinct anonymous session. The portable backend's initial Vercel hosting and fixture-stream transport have been verified.
 
 ## Data Sources
 
@@ -105,10 +105,12 @@ PREVIEW_BASE_URL=https://your-frontend-preview.example npm run test:e2e
 
 `PREVIEW_BASE_URL` skips local server startup. The browser test checks the frontend's `/api` forwarding, the completed stream, and the forwarded HttpOnly fixture cookie. Use the actual reachable deployment URL; a protected preview may require a browser session with Vercel access.
 
+The Phase 1 deployment proof passed on October 25, 2026: [frontend](https://movie-agent-frontend-iota.vercel.app/) forwarded `/api/health` to the [backend](https://movie-agent-backend.vercel.app/api/health), and both deployed Playwright fixture tests passed, including incremental SSE delivery and HttpOnly cookie forwarding. The backend's direct fixture stream delivered five ordered events over about 0.31 seconds. These deployments currently exercise deterministic fixtures; they do not make live recommendation requests.
+
 ## Current Limitations
 
 - Only the typed contracts, health endpoint, fixture stream, and transport-proof UI exist; real recommendation behavior is not implemented yet.
-- Vercel preview streaming and cookies still require deployed verification. Groq tool/typed-output compatibility and API credential authentication have been checked; real recommendation behavior and Supabase tables have not.
+- Vercel routing, fixture streaming and cookies passed deployed checks. Groq tool/typed-output compatibility and API credential authentication have been checked; real recommendation behavior and Supabase tables have not.
 - Availability is provider-level and country-specific; it may be incomplete or stale.
 - Subjective qualities such as “dark” are interpretations, not objective catalog fields.
 - Rotten Tomatoes enrichment is optional and may be absent for individual titles.
