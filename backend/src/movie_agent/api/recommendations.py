@@ -511,7 +511,7 @@ def _stream_response(
 
 
 def _persistence_http_error(error: PersistenceError) -> HTTPException:
-    if error.code in {"40001", "version_conflict", "run_in_progress", "lease_mismatch"}:
+    if error.code in {"40001", "55P03", "version_conflict", "run_in_progress", "lease_mismatch"}:
         return HTTPException(status_code=409, detail="Conversation changed or has an active run")
     if error.code in {"P0001", "session_rate_limited", "global_rate_limited"}:
         return HTTPException(status_code=429, detail="Recommendation usage limit reached")

@@ -36,8 +36,9 @@ def test_postgres_usage_limit_error_maps_to_http_429() -> None:
     assert response.status_code == 429
 
 
-def test_active_run_error_maps_to_http_409() -> None:
-    error = PersistenceError("Persistence request failed", status_code=400, code="40001")
+@pytest.mark.parametrize("code", ["40001", "55P03"])
+def test_active_run_error_maps_to_http_409(code: str) -> None:
+    error = PersistenceError("Persistence request failed", status_code=400, code=code)
 
     response = recommendations_api._persistence_http_error(error)
 
