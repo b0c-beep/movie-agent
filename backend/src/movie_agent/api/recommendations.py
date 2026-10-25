@@ -439,7 +439,31 @@ async def _finish_cancelled(
 
 def _load_replay_events(claimed: ClaimedRun) -> list[TraceEvent]:
     if claimed.trace is None:
-        raise HTTPException(status_code=503, detail="Stored run trace is unavailable")
+        terminal_types = {
+            RunStatus.FAILED: (
+                TraceEventType.FAILED,
+                "This recommendation run ended before a result was saved",
+            ),
+            RunStatus.CANCELLED: (
+                TraceEventType.CANCELLED,
+                "This recommendation run was cancelled before a result was saved",
+            ),
+        }
+        fallback = terminal_types.get(claimed.status)
+        if fallback is None:
+            raise HTTPException(status_code=503, detail="Stored run trace is unavailable")
+        event_type, summary = fallback
+        return [
+            TraceEvent(
+                run_id=claimed.run_id,
+                sequence=1,
+                stage=TraceStage.COMPLETE,
+                type=event_type,
+                origin=EventOrigin.APPLICATION,
+                summary=summary,
+                metadata={"error_code": claimed.error_code or "run_ended"},
+            )
+        ]
     try:
         return [TraceEvent.model_validate(item) for item in claimed.trace]
     except Exception:
