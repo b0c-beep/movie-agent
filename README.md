@@ -33,6 +33,7 @@ The model extracts a typed intent patch; TMDB supplies movie facts; application 
 ## Data Sources
 
 - **TMDB** is the required source for movie metadata, artwork, TMDB ratings, external IDs, and regional watch-provider data.
+- A requested rating minimum uses TMDB's 0–10 score and is enforced during discovery and detail verification. IMDb and Rotten Tomatoes thresholds are not supported yet; the app asks for a TMDB threshold instead of substituting a different source.
 - **OMDb** optionally supplies IMDb and Rotten Tomatoes values. Recommendations continue with TMDB data if OMDb is unavailable.
 - Watch-provider data is powered by JustWatch. Direct provider deep links are outside the MVP.
 

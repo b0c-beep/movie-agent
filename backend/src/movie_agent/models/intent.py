@@ -49,6 +49,7 @@ class MovieIntent(BaseModel):
     release_year_max: int | None = Field(default=None, ge=1888, le=2200)
     original_language: str | None = Field(default=None, pattern=r"^[a-z]{2}$")
     runtime_max_minutes: int | None = Field(default=None, ge=1, le=600)
+    tmdb_rating_min: float | None = Field(default=None, ge=0, le=10)
     country: str = Field(default="RO", pattern=r"^[A-Z]{2}$")
     requested_count: int = Field(default=5, ge=1, le=10)
 
@@ -73,10 +74,17 @@ class MovieIntentPatch(BaseModel):
     release_year_max: int | None = Field(default=None, ge=1888, le=2200)
     original_language: str | None = Field(default=None, pattern=r"^[a-z]{2}$")
     runtime_max_minutes: int | None = Field(default=None, ge=1, le=600)
+    tmdb_rating_min: float | None = Field(default=None, ge=0, le=10)
     people: list[PersonConstraint] | None = Field(default=None, max_length=10)
     clear_filters: list[
-        Literal["people", "release_year", "original_language", "runtime_max_minutes"]
-    ] = Field(default_factory=list, max_length=4)
+        Literal[
+            "people",
+            "release_year",
+            "original_language",
+            "runtime_max_minutes",
+            "tmdb_rating_min",
+        ]
+    ] = Field(default_factory=list, max_length=5)
     requested_count: int | None = Field(default=None, ge=1, le=10)
     country: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
     clarification: str | None = Field(default=None, max_length=240)
@@ -88,6 +96,7 @@ class MovieIntentPatch(BaseModel):
             "release_year": self.release_year_min is not None or self.release_year_max is not None,
             "original_language": self.original_language is not None,
             "runtime_max_minutes": self.runtime_max_minutes is not None,
+            "tmdb_rating_min": self.tmdb_rating_min is not None,
         }
         if any(field in self.clear_filters and changed for field, changed in conflicts.items()):
             raise ValueError("clear_filters cannot conflict with an update to the same field")
