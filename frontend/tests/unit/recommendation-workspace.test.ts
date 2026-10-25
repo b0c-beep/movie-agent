@@ -40,6 +40,7 @@ async function submitPrompt(prompt: string) {
 describe("RecommendationWorkspace terminal events", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    window.sessionStorage.clear();
     mocks.getConversation.mockReset();
     mocks.getConversation.mockResolvedValue(null);
     mocks.streamRecommendations.mockReset();
@@ -50,7 +51,7 @@ describe("RecommendationWorkspace terminal events", () => {
   });
 
   it("shows a safe failure without advancing the saved conversation", async () => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ id: "conv-1", version: 3 }));
+    window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ id: "conv-1", version: 3 }));
     mocks.getConversation.mockResolvedValue({
       conversation_id: "conv-1",
       version: 3,
@@ -78,7 +79,7 @@ describe("RecommendationWorkspace terminal events", () => {
 
     expect(await screen.findByText("Failed")).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("couldn’t interpret that request");
-    expect(window.localStorage.getItem(STORAGE_KEY)).toBe(
+    expect(window.sessionStorage.getItem(STORAGE_KEY)).toBe(
       JSON.stringify({ id: "conv-1", version: 3 }),
     );
     expect(mocks.streamRecommendations).toHaveBeenCalledWith(
@@ -107,7 +108,7 @@ describe("RecommendationWorkspace terminal events", () => {
     await submitPrompt("three comedies");
 
     expect(await screen.findByText("Complete")).toBeInTheDocument();
-    expect(window.localStorage.getItem(STORAGE_KEY)).toBe(
+    expect(window.sessionStorage.getItem(STORAGE_KEY)).toBe(
       JSON.stringify({ id: "conv-2", version: 2 }),
     );
   });

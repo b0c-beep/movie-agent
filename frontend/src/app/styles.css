@@ -75,7 +75,7 @@ main {
 
 .eyebrow,
 label,
-.trace li span {
+.traceStage {
   color: var(--accent);
   font-size: 0.78rem;
   font-weight: 700;
@@ -228,8 +228,34 @@ button {
   border-top: 1px solid var(--line);
 }
 
-.trace li span {
+.traceLabels {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.6rem;
+}
+
+.traceStage {
   overflow-wrap: anywhere;
+}
+
+.traceOrigin,
+.traceType {
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.traceOrigin {
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.traceOrigin[data-origin="agent"] {
+  border-color: var(--accent);
+  color: #ffd1c6;
 }
 
 .trace li p {
@@ -330,8 +356,12 @@ button {
 }
 
 .movieMeta,
+.movieGenres,
 .movieRating,
+.externalRating,
+.movieLinks,
 .providers,
+.availability,
 .caveat {
   margin: 0.35rem 0;
   color: var(--muted);
@@ -339,8 +369,49 @@ button {
   line-height: 1.45;
 }
 
+.movieGenres {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.movieRatings {
+  display: grid;
+  gap: 0.15rem;
+}
+
 .movieRating {
   color: #ffd1c6;
+}
+
+.externalRating {
+  color: var(--muted);
+}
+
+.movieLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+}
+
+.movieLinks a {
+  color: #ffd1c6;
+  text-underline-offset: 0.2em;
+}
+
+.availability {
+  padding: 0.45rem 0.65rem;
+  border-left: 3px solid var(--line);
+  background: rgb(11 12 16 / 55%);
+}
+
+.availabilityError {
+  border-left-color: var(--accent);
+  color: #ffd1c6;
+}
+
+.caveat {
+  padding-left: 0.65rem;
+  border-left: 3px solid var(--line);
 }
 
 .movieOverview,

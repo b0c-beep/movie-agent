@@ -2,7 +2,7 @@
 
 Movie Agent helps answer the deceptively difficult question: **what should I watch tonight?** It turns conversational requests such as “give me three 1990s dark romances” or “an action movie with Sylvester Stallone” into grounded, country-aware recommendations.
 
-> Status: Phase 2 is complete on `main` at `b2eb1d1`; a production active-claim conflict returned HTTP 409 in 1.027 seconds. Phase 3 is in progress. Recent production runs have failed during Groq intent extraction; provider logs show HTTP 400 responses, while Supabase claim/finalize calls succeeded. A focused fix for structured-output compatibility, failure reporting, and conversation-version handling is in review.
+> Status: Phase 2 is complete on `main` at `9f98a5e`; a production active-claim conflict returned HTTP 409 in 1.027 seconds. Phase 3 is in progress. PR #17's failure reporting and structured-output compatibility fix is merged, but a post-merge production run still hit the 1,800-token intent extraction limit. The current Phase 3 branch raises that limit to 4,500 and is adding per-tab conversations, a passcode prompt on new app entries, and richer cards and trace labels. These branch changes have passed local checks and browser tests; production verification of the higher limit remains pending.
 
 ## Planned Product Experience
 
@@ -11,7 +11,7 @@ Movie Agent helps answer the deceptively difficult question: **what should I wat
 - Stream a safe, visible **predict → decide → act** trace while the agent works.
 - Return responsive movie cards with posters, match explanations, ratings, and external links.
 - Show country-specific streaming providers and their logos.
-- Protect the demo behind a shared passcode to control API usage.
+- Protect the demo behind a shared passcode to control API usage; the current Phase 3 work asks again on each new tab while retaining the HttpOnly cookie for API ownership checks.
 
 New searches default to five recommendations and can request a different count, capped at ten. If too few verified matches exist, the app will explain the shortfall. Follow-ups can refine preferences, request another set, or ask about a displayed movie.
 
@@ -28,7 +28,7 @@ FastAPI + Pydantic AI
         └── Supabase: anonymous sessions, conversations, runs, usage limits
 ```
 
-The model extracts a typed intent patch; TMDB supplies movie facts; application code verifies hard constraints and assembles the cards. The portable backend and protected Phase 2 recommendation flow are deployed on Vercel. Production has returned grounded recommendation batches, but the current Groq intent-extraction failure is being addressed and still needs deployment verification.
+The model extracts a typed intent patch; TMDB supplies movie facts; application code verifies hard constraints and assembles the cards. The portable backend and protected Phase 2 recommendation flow are deployed on Vercel. Production has returned grounded recommendation batches; intent extraction still needs a production smoke test with the updated token budget.
 
 ## Data Sources
 
@@ -117,7 +117,8 @@ The Phase 1 deployment proof passed on October 25, 2026: [frontend](https://movi
 ## Current Limitations
 
 - The protected passcode/session flow, TMDB adapter, recommendation API and cards are merged to `main` and deployed. The Supabase schema and core persistence RPCs have been exercised against the project database.
-- The browser suite uses deterministic fixtures. A hosted rating-threshold request passed at production revision `f536fba`; the live active-claim loser returned HTTP 409 in 1.027 seconds after the Phase 2 migration. Recent Groq intent-extraction failures are under review; production verification of the proposed structured-output fix remains outstanding.
+- The browser suite uses deterministic fixtures. A hosted rating-threshold request passed at production revision `f536fba`; the live active-claim loser returned HTTP 409 in 1.027 seconds after the Phase 2 migration. PR #17 is merged, but a post-merge request still exceeded the 1,800-token intent extraction budget. The current branch raises the limit to 4,500 and awaits deployment verification.
+- The proposed per-tab conversation pointer uses `sessionStorage`; current recommendations receive only the active conversation's preferences. Cross-conversation taste inference is not implemented. These behavior changes remain under review until the Phase 3 branch is merged.
 - Availability is provider-level and country-specific; it may be incomplete or stale.
 - Subjective qualities such as “dark” are interpretations, not objective catalog fields.
 - Rotten Tomatoes enrichment is optional and may be absent for individual titles.

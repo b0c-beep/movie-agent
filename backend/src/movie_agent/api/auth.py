@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from movie_agent.security.sessions import (
     InvalidSessionToken,
+    SessionClaims,
     sign_session_token,
     verify_passcode,
     verify_session_token,
@@ -72,6 +73,13 @@ async def unlock(request: Request, response: Response, body: UnlockRequest) -> S
             detail="Invalid passcode",
         )
 
+    existing_session = _existing_session(request, signing_key)
+    if existing_session is not None:
+        return SessionResponse(
+            session_id=existing_session.session_id,
+            expires_at=existing_session.expires_at,
+        )
+
     now = datetime.now(UTC)
     session_id = uuid4()
     expires_at = now + SESSION_TTL
@@ -90,7 +98,6 @@ async def unlock(request: Request, response: Response, body: UnlockRequest) -> S
         httponly=True,
         secure=os.getenv("APP_ENV", "production").lower() != "development",
         samesite="lax",
-        max_age=int(SESSION_TTL.total_seconds()),
         path="/api",
     )
     return SessionResponse(session_id=session_id, expires_at=expires_at)
@@ -132,6 +139,16 @@ def _auth_bucket_key(request: Request, signing_key: str) -> str:
         address.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
+
+
+def _existing_session(request: Request, signing_key: str) -> SessionClaims | None:
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if token is None:
+        return None
+    try:
+        return verify_session_token(token, signing_key)
+    except (InvalidSessionToken, ValueError):
+        return None
 
 
 def _client_address(request: Request) -> str:

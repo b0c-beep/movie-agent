@@ -12,7 +12,77 @@ import {
 
 const CONVERSATION_STORAGE_KEY = "movie-agent-conversation";
 
+const EVENT_TYPE_LABELS: Record<string, string> = {
+  run_started: "Run started",
+  intent_updated: "Preferences updated",
+  decision: "Decision",
+  tool_started: "Tool started",
+  tool_finished: "Tool finished",
+  recommendations: "Recommendations",
+  completed: "Completed",
+  needs_clarification: "Needs clarification",
+  failed: "Run failed",
+  cancelled: "Run cancelled",
+};
+
+const RATING_LABELS: Record<string, string> = {
+  tmdb: "TMDB",
+  imdb: "IMDb",
+  rotten_tomatoes: "Rotten Tomatoes",
+};
+
 type SavedConversation = { id: string; version: number };
+type ProviderLookup = RecommendationResult["provider_lookups"][number];
+
+function readSavedConversation(): SavedConversation | null {
+  try {
+    const raw = window.sessionStorage.getItem(CONVERSATION_STORAGE_KEY);
+    if (!raw) return null;
+    const value: unknown = JSON.parse(raw);
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      "id" in value &&
+      typeof value.id === "string" &&
+      "version" in value &&
+      typeof value.version === "number"
+    ) {
+      return { id: value.id, version: value.version };
+    }
+  } catch {
+    // A fresh conversation is safer than restoring a malformed tab pointer.
+  }
+  saveConversation(null);
+  return null;
+}
+
+function saveConversation(conversation: SavedConversation | null) {
+  try {
+    if (conversation) {
+      window.sessionStorage.setItem(CONVERSATION_STORAGE_KEY, JSON.stringify(conversation));
+    } else {
+      window.sessionStorage.removeItem(CONVERSATION_STORAGE_KEY);
+    }
+  } catch {
+    // The current tab continues in memory if browser storage is unavailable.
+  }
+}
+
+function eventTypeLabel(type: string): string {
+  return (
+    EVENT_TYPE_LABELS[type] ??
+    type.replaceAll("_", " ").replace(/^./, (character) => character.toUpperCase())
+  );
+}
+
+function ratingLabel(source: string): string {
+  return RATING_LABELS[source] ?? source.replaceAll("_", " ");
+}
+
+function ratingValue(value: number, scale: string): string {
+  const formatted = scale === "10" || !Number.isInteger(value) ? value.toFixed(1) : String(value);
+  return `${formatted} / ${scale}`;
+}
 
 function failureMessage(event: TraceEvent): string {
   const errorCode = typeof event.metadata?.error_code === "string" ? event.metadata.error_code : null;
@@ -46,12 +116,8 @@ export function RecommendationWorkspace() {
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
-      try {
-        const raw = window.localStorage.getItem(CONVERSATION_STORAGE_KEY);
-        if (raw) setConversation(JSON.parse(raw) as SavedConversation);
-      } catch {
-        window.localStorage.removeItem(CONVERSATION_STORAGE_KEY);
-      }
+      const saved = readSavedConversation();
+      if (saved) setConversation(saved);
     }, 0);
     return () => window.clearTimeout(timeout);
   }, []);
@@ -65,12 +131,12 @@ export function RecommendationWorkspace() {
         if (!snapshot) {
           setConversation(null);
           setResult(null);
-          window.localStorage.removeItem(CONVERSATION_STORAGE_KEY);
+          saveConversation(null);
           return;
         }
         const restored = { id: snapshot.conversation_id, version: snapshot.version };
         setConversation(restored);
-        window.localStorage.setItem(CONVERSATION_STORAGE_KEY, JSON.stringify(restored));
+        saveConversation(restored);
         if (snapshot.result) {
           setResult({
             ...snapshot.result,
@@ -134,7 +200,7 @@ export function RecommendationWorkspace() {
         version: (conversation?.version ?? 1) + 1,
       };
       setConversation(nextConversation);
-      window.localStorage.setItem(CONVERSATION_STORAGE_KEY, JSON.stringify(nextConversation));
+      saveConversation(nextConversation);
       setMessage("");
       setStatus("Complete");
     } catch (reason) {
@@ -158,7 +224,7 @@ export function RecommendationWorkspace() {
     setMessage("");
     setError(null);
     setStatus("Ready");
-    window.localStorage.removeItem(CONVERSATION_STORAGE_KEY);
+    saveConversation(null);
   }
 
   return (
@@ -223,7 +289,13 @@ export function RecommendationWorkspace() {
           <ol>
             {events.map((event) => (
               <li key={event.event_id}>
-                <span>{event.stage}</span>
+                <div className="traceLabels">
+                  <span className="traceStage">{event.stage}</span>
+                  <span className="traceOrigin" data-origin={event.origin}>
+                    {event.origin === "agent" ? "Agent" : "Application"}
+                  </span>
+                  <span className="traceType">{eventTypeLabel(event.type)}</span>
+                </div>
                 <p>{event.summary}</p>
               </li>
             ))}
@@ -269,7 +341,13 @@ function Results({ result }: { result: RecommendationResult }) {
       {result.recommendations.length ? (
         <div className="movieGrid">
           {result.recommendations.map((recommendation) => (
-            <MovieCard key={recommendation.movie.tmdb_id} recommendation={recommendation} />
+            <MovieCard
+              key={recommendation.movie.tmdb_id}
+              providerLookup={(result.provider_lookups ?? []).find(
+                (lookup) => lookup.tmdb_id === recommendation.movie.tmdb_id,
+              )}
+              recommendation={recommendation}
+            />
           ))}
         </div>
       ) : (
@@ -279,9 +357,20 @@ function Results({ result }: { result: RecommendationResult }) {
   );
 }
 
-function MovieCard({ recommendation }: { recommendation: RecommendationCard }) {
+function MovieCard({
+  recommendation,
+  providerLookup,
+}: {
+  recommendation: RecommendationCard;
+  providerLookup?: ProviderLookup;
+}) {
   const movie = recommendation.movie;
-  const rating = movie.ratings.find((item) => item.source === "tmdb");
+  const ratings = movie.ratings ?? [];
+  const tmdbRating = ratings.find((item) => item.source === "tmdb");
+  const externalRatings = ratings.filter(
+    (item) => item.source !== "tmdb" && item.value != null,
+  );
+  const genres = movie.genres ?? [];
   const providerGroups = movie.watch_options
     ? [
         ["Subscription", movie.watch_options.subscription],
@@ -291,6 +380,9 @@ function MovieCard({ recommendation }: { recommendation: RecommendationCard }) {
         ["Buy", movie.watch_options.buy],
       ] as const
     : [];
+  const caveats = providerLookup
+    ? recommendation.caveats.filter((caveat) => !/provider|availability/i.test(caveat))
+    : recommendation.caveats;
 
   return (
     <article className="movieCard">
@@ -316,12 +408,39 @@ function MovieCard({ recommendation }: { recommendation: RecommendationCard }) {
             {movie.title}
           </a>
         </h3>
-        <p className="movieRating">
-          TMDB · {rating?.value == null ? "Not rated" : `${rating.value.toFixed(1)} / 10`}
-          {rating?.vote_count ? ` · ${rating.vote_count.toLocaleString()} votes` : ""}
+        <p className="movieGenres">
+          {genres.length ? genres.join(" · ") : "Genres not listed."}
         </p>
+        <div className="movieRatings">
+          <p className="movieRating">
+            TMDB ·{" "}
+            {tmdbRating?.value == null
+              ? "Not rated"
+              : ratingValue(tmdbRating.value, tmdbRating.scale)}
+            {tmdbRating?.vote_count
+              ? ` · ${tmdbRating.vote_count.toLocaleString()} votes`
+              : ""}
+          </p>
+          {externalRatings.map((rating) => (
+            <p className="externalRating" key={rating.source}>
+              {ratingLabel(rating.source)} · {ratingValue(rating.value as number, rating.scale)}
+              {rating.vote_count ? ` · ${rating.vote_count.toLocaleString()} votes` : ""}
+            </p>
+          ))}
+        </div>
         <p className="movieOverview">{movie.overview || "No overview available."}</p>
         <p className="matchReason">{recommendation.match_reason}</p>
+        <p className="movieLinks">
+          <a href={movie.tmdb_url} rel="noreferrer" target="_blank">
+            TMDB page
+          </a>
+          {movie.imdb_url ? (
+            <a href={movie.imdb_url} rel="noreferrer" target="_blank">
+              IMDb page
+            </a>
+          ) : null}
+        </p>
+        <ProviderAvailability lookup={providerLookup} />
         {providerGroups.map(([label, providers]) =>
           providers.length ? (
             <p className="providers" key={label}>
@@ -344,7 +463,7 @@ function MovieCard({ recommendation }: { recommendation: RecommendationCard }) {
             </p>
           ) : null,
         )}
-        {recommendation.caveats.map((caveat) => (
+        {caveats.map((caveat) => (
           <p className="caveat" key={caveat}>
             {caveat}
           </p>
@@ -352,4 +471,28 @@ function MovieCard({ recommendation }: { recommendation: RecommendationCard }) {
       </div>
     </article>
   );
+}
+
+function ProviderAvailability({ lookup }: { lookup?: ProviderLookup }) {
+  if (!lookup) return null;
+  if (lookup.outcome === "error") {
+    return (
+      <p className="availability availabilityError">
+        Availability lookup failed for {lookup.country}. Streaming options are unknown.
+      </p>
+    );
+  }
+  if (lookup.outcome === "no_data") {
+    return (
+      <p className="availability">
+        No provider data for {lookup.country}. This does not mean the movie is unavailable.
+      </p>
+    );
+  }
+  if (lookup.provider_count === 0) {
+    return (
+      <p className="availability">No streaming providers listed for {lookup.country}.</p>
+    );
+  }
+  return null;
 }
