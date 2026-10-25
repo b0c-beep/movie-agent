@@ -6,10 +6,15 @@
   --text: #f7f4ed;
   --muted: #a9adb8;
   --accent: #ff6b4a;
+  --focus: #ffffff;
 }
 
 * {
   box-sizing: border-box;
+}
+
+html {
+  overflow-wrap: break-word;
 }
 
 body {
@@ -22,24 +27,28 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+img {
+  max-width: 100%;
+}
+
 main {
   width: min(880px, calc(100% - 2rem));
   margin: 0 auto;
-  padding: 8vh 0;
+  padding: clamp(1.5rem, 6vw, 4rem) 0;
 }
 
 .hero,
 .trace {
-  padding: clamp(1.25rem, 4vw, 2.5rem);
+  padding: clamp(1rem, 5vw, 2.5rem);
   border: 1px solid var(--line);
-  border-radius: 1.5rem;
+  border-radius: clamp(0.9rem, 3vw, 1.5rem);
   background: rgb(23 25 31 / 88%);
   backdrop-filter: blur(16px);
 }
 
 .accessCard {
   max-width: 42rem;
-  margin: 12vh auto 0;
+  margin: clamp(2rem, 10vh, 6rem) auto 0;
 }
 
 .accessError {
@@ -54,9 +63,10 @@ main {
 .workspaceHeading,
 .resultsHeading {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 0.75rem 1rem;
 }
 
 .trace {
@@ -74,10 +84,11 @@ label,
 }
 
 h1 {
-  max-width: 12ch;
+  max-width: 14ch;
   margin: 0.5rem 0;
-  font-size: clamp(2.5rem, 8vw, 5.5rem);
+  font-size: clamp(2rem, 8vw, 5.5rem);
   line-height: 0.95;
+  overflow-wrap: anywhere;
 }
 
 .lede,
@@ -87,7 +98,7 @@ h1 {
 }
 
 form {
-  margin-top: 2rem;
+  margin-top: clamp(1.25rem, 4vw, 2rem);
 }
 
 label {
@@ -97,6 +108,7 @@ label {
 
 .promptRow {
   display: flex;
+  flex-direction: column;
   gap: 0.75rem;
 }
 
@@ -116,6 +128,7 @@ button:disabled {
 input {
   flex: 1;
   min-width: 0;
+  width: 100%;
   padding: 0 1rem;
   border: 1px solid var(--line);
   background: #0f1116;
@@ -135,24 +148,24 @@ textarea {
 }
 
 button {
-  padding: 0 1.25rem;
+  padding: 0.65rem 1.25rem;
   border: 0;
   background: var(--accent);
   color: #1a0905;
   cursor: pointer;
   font-weight: 800;
+  overflow-wrap: anywhere;
 }
 
-input:focus-visible,
-textarea:focus-visible,
-button:focus-visible {
-  outline: 3px solid #fff;
+:where(a, button, input, textarea, select, summary):focus-visible {
+  outline: 3px solid var(--focus);
   outline-offset: 3px;
 }
 
 .formActions,
 .actionButtons {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
@@ -166,6 +179,7 @@ button:focus-visible {
 
 .actionButtons {
   justify-content: flex-end;
+  margin-left: auto;
 }
 
 .quietButton {
@@ -176,25 +190,30 @@ button:focus-visible {
 
 .traceHeader {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 0.75rem 1rem;
 }
 
 .traceHeader h2 {
   margin: 0;
+  font-size: clamp(1.15rem, 3vw, 1.5rem);
 }
 
 .traceHeader span {
+  max-width: 100%;
   padding: 0.4rem 0.7rem;
   border: 1px solid var(--line);
   border-radius: 999px;
   color: var(--muted);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
 }
 
 .trace ol {
   display: grid;
-  gap: 0.75rem;
+  gap: 0;
   margin: 1.25rem 0 0;
   padding: 0;
   list-style: none;
@@ -202,24 +221,31 @@ button:focus-visible {
 
 .trace li {
   display: grid;
-  grid-template-columns: 6rem 1fr;
-  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.3rem;
   align-items: baseline;
-  padding-top: 0.75rem;
+  padding: 0.75rem 0;
   border-top: 1px solid var(--line);
 }
 
+.trace li span {
+  overflow-wrap: anywhere;
+}
+
 .trace li p {
+  min-width: 0;
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .results {
-  margin-top: 1.5rem;
+  margin-top: clamp(1rem, 4vw, 1.5rem);
 }
 
 .results h2 {
   margin: 0;
-  font-size: clamp(1.5rem, 4vw, 2.25rem);
+  font-size: clamp(1.35rem, 4vw, 2.25rem);
+  overflow-wrap: anywhere;
 }
 
 .shortfall {
@@ -229,21 +255,23 @@ button:focus-visible {
   border-radius: 0.75rem;
   color: var(--muted);
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .movieGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 29rem), 1fr));
-  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 28rem), 1fr));
+  gap: clamp(0.75rem, 2vw, 1rem);
   margin-top: 1rem;
 }
 
 .movieCard {
   display: grid;
-  grid-template-columns: 8rem minmax(0, 1fr);
-  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.9rem;
+  align-items: start;
   overflow: hidden;
-  padding: 1rem;
+  padding: 0.9rem;
   border: 1px solid var(--line);
   border-radius: 1rem;
   background: var(--surface);
@@ -251,7 +279,9 @@ button:focus-visible {
 
 .poster {
   display: block;
-  min-height: 12rem;
+  justify-self: center;
+  width: min(100%, 8rem);
+  aspect-ratio: 2 / 3;
   overflow: hidden;
   border-radius: 0.5rem;
   background: #0f1116;
@@ -259,26 +289,38 @@ button:focus-visible {
   text-decoration: none;
 }
 
+.poster:focus-visible {
+  outline-offset: -3px;
+}
+
 .posterImage {
   display: block;
   width: 100%;
   height: 100%;
-  min-height: 12rem;
   background-position: center;
   background-size: cover;
 }
 
 .posterFallback {
   display: grid;
-  min-height: 12rem;
+  height: 100%;
   place-items: center;
   padding: 0.5rem;
+  font-size: 0.78rem;
+  line-height: 1.3;
   text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.movieInfo {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .movieInfo h3 {
   margin: 0.2rem 0 0.6rem;
-  font-size: 1.35rem;
+  font-size: clamp(1.15rem, 3vw, 1.35rem);
+  line-height: 1.2;
 }
 
 .movieInfo h3 a {
@@ -319,14 +361,18 @@ button:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
+  max-width: 100%;
   margin-right: 0.65rem;
+  vertical-align: middle;
+  overflow-wrap: anywhere;
 }
 
 .providerBadge img {
+  flex: none;
   width: 1.5rem;
   height: 1.5rem;
   border-radius: 0.3rem;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .attribution {
@@ -335,48 +381,66 @@ button:focus-visible {
   align-items: center;
   justify-content: center;
   gap: 0.65rem 1rem;
-  margin: 1.5rem 0 0;
+  margin: clamp(1rem, 4vw, 1.5rem) 0 0;
   color: var(--muted);
   font-size: 0.78rem;
+  line-height: 1.5;
   text-align: center;
+  overflow-wrap: anywhere;
 }
 
 .attribution a {
   display: inline-flex;
 }
 
-@media (max-width: 600px) {
-  .promptRow {
-    flex-direction: column;
-  }
-
-  .workspaceHeading {
-    flex-direction: column;
-  }
-
+@media (min-width: 22.5rem) {
   .movieCard {
-    grid-template-columns: 6rem minmax(0, 1fr);
-    gap: 0.75rem;
-    padding: 0.75rem;
+    grid-template-columns: clamp(5.5rem, 20vw, 8rem) minmax(0, 1fr);
   }
 
-  .poster,
-  .posterImage,
-  .posterFallback {
-    min-height: 9rem;
+  .poster {
+    justify-self: stretch;
+    width: 100%;
+  }
+}
+
+@media (min-width: 30rem) {
+  .promptRow {
+    flex-direction: row;
+  }
+
+  input {
+    width: auto;
   }
 
   .trace li {
-    grid-template-columns: 1fr;
-    gap: 0.3rem;
+    grid-template-columns: minmax(4.5rem, 6rem) minmax(0, 1fr);
+    gap: 0.75rem;
+  }
+}
+
+@media (min-width: 44rem) {
+  .workspaceHeading {
+    flex-wrap: nowrap;
+  }
+
+  .movieCard {
+    gap: 1rem;
+    padding: 1rem;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
   *,
   *::before,
   *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
-    transition: none !important;
   }
 }
