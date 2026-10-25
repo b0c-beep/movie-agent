@@ -373,6 +373,19 @@ def test_refine_keeps_constraints_and_does_not_exclude_prior_results() -> None:
     assert result.excluded_tmdb_ids == []
 
 
+def test_rating_minimum_is_preserved_by_refinements_and_can_be_cleared() -> None:
+    prior = MovieIntent(tmdb_rating_min=7.5)
+
+    preserved = merge_intent(prior, MovieIntentPatch(turn_kind=TurnKind.REFINE))
+    cleared = merge_intent(
+        prior,
+        MovieIntentPatch(turn_kind=TurnKind.REFINE, clear_filters=["tmdb_rating_min"]),
+    )
+
+    assert preserved.intent.tmdb_rating_min == 7.5
+    assert cleared.intent.tmdb_rating_min is None
+
+
 def test_explicit_clear_filters_remove_people_year_language_and_runtime() -> None:
     prior = MovieIntent(
         people=[PersonConstraint(name="Jim Carrey")],
@@ -437,6 +450,24 @@ async def test_discovery_uses_only_explicit_filters_and_caps_candidates() -> Non
     assert client.people_calls == []
     assert result.batch.shortfall_reason is not None
     assert "runtime" in result.batch.shortfall_reason
+
+
+@pytest.mark.asyncio
+async def test_tmdb_rating_minimum_is_discovered_and_verified_against_details() -> None:
+    intent = MovieIntent(tmdb_rating_min=7, requested_count=1)
+    candidates = [_candidate(1), _candidate(2)]
+    details = {
+        1: _details(1, rating=6.9),
+        2: _details(2, rating=7.0),
+    }
+    client = FakeTmdbClient(pages={1: _page(1, 1, candidates)}, details=details)
+
+    result = await assemble_recommendations(client, intent)
+
+    filters, _ = client.discover_calls[0]
+    assert filters.tmdb_rating_min == 7
+    assert [item.movie.tmdb_id for item in result.batch.recommendations] == [2]
+    assert result.batch.recommendations[0].matched_constraints == ["tmdb_rating>=7"]
 
 
 @pytest.mark.asyncio

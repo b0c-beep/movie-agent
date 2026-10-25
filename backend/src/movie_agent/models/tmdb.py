@@ -127,6 +127,7 @@ class TmdbDiscoverFilters(BaseModel):
     release_year_max: int | None = Field(default=None, ge=MIN_YEAR, le=MAX_YEAR)
     original_language: str | None = Field(default=None, pattern=LANGUAGE_PATTERN)
     runtime_max_minutes: int | None = Field(default=None, ge=1, le=600)
+    tmdb_rating_min: float | None = Field(default=None, ge=0, le=10)
     genre_ids: list[PositiveInt] = Field(default_factory=list, max_length=MAX_FILTER_IDS)
     people_ids: list[PositiveInt] = Field(default_factory=list, max_length=MAX_FILTER_IDS)
     crew_ids: list[PositiveInt] = Field(default_factory=list, max_length=MAX_FILTER_IDS)

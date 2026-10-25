@@ -221,6 +221,13 @@ def merge_intent(
             if patch.runtime_max_minutes is not None
             else prior.runtime_max_minutes
         ),
+        tmdb_rating_min=(
+            None
+            if "tmdb_rating_min" in clear_filters
+            else patch.tmdb_rating_min
+            if patch.tmdb_rating_min is not None
+            else prior.tmdb_rating_min
+        ),
         country=patch.country if patch.country is not None else prior.country,
         requested_count=(
             patch.requested_count if patch.requested_count is not None else prior.requested_count
@@ -486,6 +493,7 @@ def _build_discover_filters(
         release_year_max=intent.release_year_max,
         original_language=intent.original_language,
         runtime_max_minutes=intent.runtime_max_minutes,
+        tmdb_rating_min=intent.tmdb_rating_min,
         genre_ids=_resolve_genre_ids(intent.genres, issues),
         people_ids=list(people_ids),
     )
@@ -639,6 +647,10 @@ def _hard_constraint_failures(details: TmdbMovieDetails, intent: MovieIntent) ->
         details.runtime_minutes is None or details.runtime_minutes > intent.runtime_max_minutes
     ):
         failures.append("runtime")
+    if intent.tmdb_rating_min is not None and (
+        details.tmdb_rating is None or details.tmdb_rating < intent.tmdb_rating_min
+    ):
+        failures.append("rating")
     if intent.people and not _matches_people(intent.people, details):
         failures.append("people")
 
@@ -853,6 +865,11 @@ def _match_reason(details: TmdbMovieDetails, intent: MovieIntent) -> str:
             f"Runtime {details.runtime_minutes} minutes is within the "
             f"{intent.runtime_max_minutes}-minute limit."
         )
+    if intent.tmdb_rating_min is not None and details.tmdb_rating is not None:
+        parts.append(
+            f"TMDB rating {details.tmdb_rating:.1f} meets the "
+            f"{intent.tmdb_rating_min:g}/10 minimum."
+        )
 
     matched_people = [person.name for person in intent.people if _person_matches(person, details)]
     if matched_people:
@@ -888,6 +905,8 @@ def _matched_constraints(details: TmdbMovieDetails, intent: MovieIntent) -> list
 
     if intent.runtime_max_minutes is not None and details.runtime_minutes is not None:
         constraints.append(f"runtime<={intent.runtime_max_minutes}")
+    if intent.tmdb_rating_min is not None and details.tmdb_rating is not None:
+        constraints.append(f"tmdb_rating>={intent.tmdb_rating_min:g}")
 
     for person in intent.people:
         if _person_matches(person, details):
@@ -952,6 +971,8 @@ def _constraint_labels(failures: Counter[str]) -> list[str]:
         labels.append("genre")
     if failures["runtime"]:
         labels.append("runtime")
+    if failures["rating"]:
+        labels.append("TMDB rating")
     if failures["people"]:
         labels.append("people")
     return labels

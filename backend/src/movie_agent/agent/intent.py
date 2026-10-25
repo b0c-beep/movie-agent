@@ -19,6 +19,9 @@ def build_intent_agent(model: Model | str | None = None) -> Agent[None, MovieInt
         system_prompt=(
             "Extract a small typed patch from the user's latest movie request. "
             "Return only constraints the user explicitly asked for; do not invent filters. "
+            "A rating threshold without a named source means TMDB's 0-10 rating; set "
+            "tmdb_rating_min for it. If the user explicitly requests IMDb or Rotten Tomatoes "
+            "ratings, do not substitute TMDB; ask for a TMDB rating threshold instead. "
             "Preserve omitted constraints by leaving patch fields unset. Use set/add/remove/clear "
             "operations and clear_filters only when the user explicitly removes a constraint. "
             "Classify the turn as new_search, refine, another_set, "

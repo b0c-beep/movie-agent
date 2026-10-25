@@ -88,6 +88,8 @@ class TmdbClient:
             params["with_original_language"] = resolved.original_language
         if resolved.runtime_max_minutes is not None:
             params["with_runtime.lte"] = resolved.runtime_max_minutes
+        if resolved.tmdb_rating_min is not None:
+            params["vote_average.gte"] = str(resolved.tmdb_rating_min)
         if resolved.genre_ids:
             params["with_genres"] = ",".join(str(value) for value in resolved.genre_ids)
         if resolved.people_ids:

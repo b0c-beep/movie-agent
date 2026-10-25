@@ -17,6 +17,7 @@ async def test_intent_agent_returns_typed_patch_without_unrequested_filters() ->
             "release_year_max": None,
             "original_language": None,
             "runtime_max_minutes": None,
+            "tmdb_rating_min": 7.5,
             "people": None,
             "country": None,
             "clarification": None,
@@ -24,7 +25,7 @@ async def test_intent_agent_returns_typed_patch_without_unrequested_filters() ->
     )
 
     patch = await extract_intent_patch(
-        "Make them newer and only give me two.",
+        "Make them newer, only give me two, and keep the rating at least 7.5.",
         MovieIntent(genres=["comedy"], country="RO"),
         model=model,
     )
@@ -32,6 +33,7 @@ async def test_intent_agent_returns_typed_patch_without_unrequested_filters() ->
     assert isinstance(patch, MovieIntentPatch)
     assert patch.turn_kind is TurnKind.REFINE
     assert patch.requested_count == 2
+    assert patch.tmdb_rating_min == 7.5
     assert patch.genres is None
     assert patch.country is None
 
