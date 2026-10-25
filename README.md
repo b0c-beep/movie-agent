@@ -2,7 +2,7 @@
 
 Movie Agent helps answer the deceptively difficult question: **what should I watch tonight?** It turns conversational requests such as “give me three 1990s dark romances” or “an action movie with Sylvester Stallone” into grounded, country-aware recommendations.
 
-> Status: Phase 2 implementation and privacy-safe failure diagnostics are merged and deployed at `f1be7ea`. Hosted rating-threshold filtering passed against the production backend at `f536fba`. Historical traces place four failed runs in prediction after `decision` and before `intent_updated`; they cannot distinguish intent extraction from merging or emitting the update. Their exception details were not retained. Phase 2 verification remains open while the concurrent-claim losing-client timeout is investigated.
+> Status: Phase 2 implementation and privacy-safe failure diagnostics are merged and deployed at `f1be7ea`. Hosted rating-threshold filtering passed against the production backend at `f536fba`. Historical traces place four failed runs in prediction after `decision` and before `intent_updated`; they cannot distinguish intent extraction from merging or emitting the update. Their exception details were not retained. Phase 2 verification remains open: the active-claim losing-client timeout has a locally tested SQLSTATE fix proposed in [PR #15](https://github.com/b0c-beep/movie-agent/pull/15), which still needs review, deployment, and production verification.
 
 ## Planned Product Experience
 
