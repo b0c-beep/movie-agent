@@ -65,9 +65,19 @@ class Recommendation(BaseModel):
     caveats: list[str] = Field(default_factory=list)
 
 
+class Alternative(BaseModel):
+    """A separately grounded, explicitly relaxed recommendation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    recommendation: Recommendation
+    unmet_filters: list[str] = Field(default_factory=list)
+
+
 class RecommendationBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     recommendations: list[Recommendation] = Field(max_length=10)
     requested_count: int = Field(ge=1, le=10)
     shortfall_reason: str | None = None
+    alternatives: list[Alternative] = Field(default_factory=list, max_length=3)

@@ -2,7 +2,7 @@
 
 Movie Agent helps answer the deceptively difficult question: **what should I watch tonight?** It turns conversational requests such as “give me three 1990s dark romances” or “an action movie with Sylvester Stallone” into grounded, country-aware recommendations.
 
-> Status: Phase 2 is complete. Phase 3 implementation is merged on `main` at `95a88b9`, including per-tab conversations, country-only availability refresh, optional OMDb ratings, answers about saved cards, grounded TMDB title similarity, and accessible clarification/session states. Both Vercel production deployments are READY at this revision, and the backend health endpoint returned HTTP 200 after deployment. The Supabase conversation-state migration is applied. A production recommendation smoke for title similarity remains to be run; actor disambiguation and full multi-turn transcript/trace history remain future work.
+> Status: Phase 2 is complete. Phase 3 implementation is merged on `main` at `95a88b9`, including per-tab conversations, country-only availability refresh, optional OMDb ratings, answers about saved cards, grounded TMDB title similarity, and accessible clarification/session states. Both Vercel production deployments are READY at that revision, and the backend health endpoint returned HTTP 200 after deployment. The Supabase conversation-state migration is applied. This Phase 4 backend branch adds session-owned capabilities/run-status reads, bounded conversation history, structured person/title clarifications, deterministic filter edits, ID-based person verification, and bounded closest-match alternatives. These additions await review and are not yet deployed.
 
 ## Planned Product Experience
 
@@ -29,6 +29,8 @@ FastAPI + Pydantic AI
 ```
 
 The model extracts a typed intent patch; TMDB supplies movie facts; application code verifies hard constraints and assembles the cards. The portable backend and protected recommendation flow are deployed on Vercel. A production smoke at `5f8a332` completed a synthetic request with the updated intent-extraction budget; broader recommendation quality remains under evaluation.
+
+The Phase 4 backend is additive: `GET /api/recommendations/capabilities` advertises supported client features, and session-owned `GET /api/recommendations/runs/{run_id}` recovers an existing run without submitting another paid request. Recommendation results may include bounded closest alternatives, conversation snapshots may include bounded turns and grounded clarification choices, and stream requests may apply an owned choice ID or a deterministic allowlisted filter edit. Older clients can ignore these fields and endpoints.
 
 ## Data Sources
 
@@ -118,7 +120,7 @@ The Phase 1 deployment proof passed on October 25, 2026: [frontend](https://movi
 
 - The protected passcode/session flow, TMDB adapter, recommendation API and cards are merged to `main` and deployed. The Supabase schema and core persistence RPCs have been exercised against the project database.
 - The browser suite uses deterministic fixtures. A hosted rating-threshold request passed at production revision `f536fba`; the live active-claim loser returned HTTP 409 in 1.027 seconds after the Phase 2 migration. The 4,500-token extraction budget passed one synthetic production smoke at `5f8a332`.
-- The per-tab conversation pointer uses `sessionStorage`; recommendations receive only the active conversation's preferences. Cross-conversation taste inference is not implemented. Country refresh, optional OMDb enrichment, saved-card questions, and atomic conversation-state updates are deployed. Actor disambiguation, a full multi-turn transcript/trace history, filter editing, and explicitly relaxed closest-match recovery remain planned work.
+- The per-tab conversation pointer uses `sessionStorage`; recommendations receive only the active conversation's preferences. Cross-conversation taste inference is not implemented. Country refresh, optional OMDb enrichment, saved-card questions, and atomic conversation-state updates are deployed. Phase 4 adds grounded actor/title choices with persisted TMDB person IDs, deterministic filter edits, bounded per-conversation turn history, recoverable run status, and up to three explicitly relaxed alternatives when exact results are empty. The Phase 4 frontend integration and production verification remain pending review.
 - Availability is provider-level and country-specific; it may be incomplete or stale.
 - Subjective qualities such as “dark” are interpretations, not objective catalog fields.
 - Rotten Tomatoes enrichment is optional and may be absent for individual titles.

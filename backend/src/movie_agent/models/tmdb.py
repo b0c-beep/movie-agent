@@ -87,6 +87,7 @@ class TmdbMovieDetails(BaseModel):
     original_title: str | None = None
     release_year: int | None = Field(default=None, ge=MIN_YEAR, le=MAX_YEAR)
     runtime_minutes: int | None = Field(default=None, ge=1)
+    original_language: str | None = Field(default=None, pattern=LANGUAGE_PATTERN)
     genres: list[str] = Field(default_factory=list)
     overview: str = ""
     poster_path: str | None = None

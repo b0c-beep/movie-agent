@@ -386,7 +386,12 @@ async def test_conversation_snapshot_is_scoped_to_the_signed_session(
         "created_at": "2026-10-25T12:00:00+00:00",
         "updated_at": "2026-10-25T12:01:00+00:00",
     }
-    responses = [httpx.Response(200, json=[row]), httpx.Response(200, json=[])]
+    responses = [
+        httpx.Response(200, json=[row]),
+        httpx.Response(200, json=[row]),
+        httpx.Response(200, json=[]),
+        httpx.Response(200, json=[]),
+    ]
 
     def persistence_handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
@@ -416,7 +421,12 @@ async def test_conversation_snapshot_is_scoped_to_the_signed_session(
         assert owned.json()["intent"]["country"] == "RO"
         assert owned.json()["result"] is None
         assert foreign.status_code == 404
-        assert all(request.url.params["session_id"] == f"eq.{session_id}" for request in requests)
+        assert all(
+            request.url.params["session_id"] == f"eq.{session_id}"
+            for request in requests
+            if request.url.path.endswith("/conversations")
+        )
+        assert any(request.url.path.endswith("/runs") for request in requests)
     finally:
         monkeypatch.setattr(app.state, "persistence", None, raising=False)
         await persistence_http.aclose()
@@ -469,6 +479,8 @@ async def test_country_availability_refresh_updates_only_providers_and_saved_cou
     def persistence_handler(request: httpx.Request) -> httpx.Response:
         persistence_requests.append(request)
         if request.method == "GET":
+            if request.url.path.endswith("/runs"):
+                return httpx.Response(200, json=[])
             return httpx.Response(200, json=[row])
         assert request.url.path.endswith("/rpc/update_conversation_state")
         update = json.loads(request.content)
@@ -550,7 +562,13 @@ async def test_country_availability_refresh_updates_only_providers_and_saved_cou
         assert restored.status_code == 200
         assert restored.json()["version"] == 4
         assert restored.json()["provider_lookups"][0]["country"] == "US"
-        assert [item.method for item in persistence_requests] == ["GET", "POST", "GET"]
+        assert [item.method for item in persistence_requests] == [
+            "GET",
+            "POST",
+            "GET",
+            "GET",
+            "GET",
+        ]
     finally:
         monkeypatch.setattr(app.state, "persistence", None, raising=False)
         monkeypatch.setattr(app.state, "tmdb", None, raising=False)

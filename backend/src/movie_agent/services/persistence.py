@@ -13,6 +13,9 @@ _CONVERSATION_SELECT = (
     "id,session_id,state,version,active_run_id,active_run_lease,"
     "lease_expires_at,created_at,updated_at"
 )
+_RUN_SELECT = (
+    "id,conversation_id,status,base_version,input,result,trace,error_code,created_at,completed_at"
+)
 _MAX_LEASE_SECONDS = 300
 _MIN_LEASE_SECONDS = 10
 _MAX_HOURLY_LIMIT = 100_000
@@ -145,6 +148,30 @@ class FinalizedRun(BaseModel):
     completed_at: datetime
 
 
+class RunRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    run_id: UUID = Field(alias="id")
+    conversation_id: UUID
+    status: RunStatus
+    version: int = Field(alias="base_version", ge=1)
+    input: dict[str, Any] = Field(default_factory=dict)
+    current_conversation_version: int | None = Field(default=None, ge=1)
+    result: dict[str, Any] | list[Any] | None = None
+    trace: list[Any] | None = None
+    error_code: str | None = None
+    created_at: datetime
+    completed_at: datetime | None = None
+
+    @property
+    def conversation_version(self) -> int:
+        return self.current_conversation_version or self.version
+
+    @property
+    def base_version(self) -> int:
+        return self.version
+
+
 class PersistenceClient:
     """Minimal Supabase Data API adapter over an injected async HTTP client.
 
@@ -226,6 +253,56 @@ class PersistenceClient:
         if len(rows) > 1:
             raise PersistenceError("Persistence returned an ambiguous conversation")
         return _validate(ConversationRecord, rows[0], "conversation")
+
+    async def get_run(
+        self,
+        session_id: UUID,
+        run_id: UUID,
+    ) -> RunRecord | None:
+        response = await self._request(
+            "GET",
+            "/rest/v1/runs",
+            params={
+                "select": _RUN_SELECT,
+                "id": f"eq.{run_id}",
+                "limit": "1",
+            },
+        )
+        rows = _rows(response, "run")
+        if not rows:
+            return None
+        if len(rows) > 1:
+            raise PersistenceError("Persistence returned an ambiguous run")
+        run = _validate(RunRecord, rows[0], "run")
+        conversation = await self.get_conversation(session_id, run.conversation_id)
+        if conversation is None:
+            return None
+        return run.model_copy(update={"current_conversation_version": conversation.version})
+
+    async def list_conversation_runs(
+        self,
+        session_id: UUID,
+        conversation_id: UUID,
+        *,
+        limit: int = 24,
+    ) -> list[RunRecord]:
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        conversation = await self.get_conversation(session_id, conversation_id)
+        if conversation is None:
+            return []
+        response = await self._request(
+            "GET",
+            "/rest/v1/runs",
+            params={
+                "select": _RUN_SELECT,
+                "conversation_id": f"eq.{conversation_id}",
+                "order": "created_at.desc",
+                "limit": str(limit),
+            },
+        )
+        rows = _rows(response, "conversation runs")
+        return [_validate(RunRecord, row, "run") for row in reversed(rows)]
 
     async def create_conversation(
         self,

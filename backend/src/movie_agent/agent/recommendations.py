@@ -9,13 +9,19 @@ from __future__ import annotations
 
 import asyncio
 import re
+import unicodedata
 from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
+from difflib import SequenceMatcher
 from enum import StrEnum
-from typing import Final, Protocol
+from typing import Any, Final, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, ValidationError
 
+from movie_agent.models.clarification import (
+    PendingClarification,
+    StoredClarificationOption,
+)
 from movie_agent.models.intent import (
     MovieIntent,
     MovieIntentPatch,
@@ -24,6 +30,7 @@ from movie_agent.models.intent import (
     TurnKind,
 )
 from movie_agent.models.movies import (
+    Alternative,
     MovieDetails,
     Rating,
     RatingSource,
@@ -36,6 +43,7 @@ from movie_agent.models.tmdb import (
     TmdbDiscoverFilters,
     TmdbMovieCandidate,
     TmdbMovieDetails,
+    TmdbPerson,
     TmdbWatchLookupStatus,
     TmdbWatchOptions,
     TmdbWatchProvider,
@@ -47,6 +55,10 @@ MAX_DISCOVERY_PAGES: Final = 3
 CANDIDATES_PER_REQUESTED_MOVIE: Final = 3
 MAX_DETAILS_TO_VERIFY: Final = 20
 MAX_CONCURRENT_TMDB_REQUESTS: Final = 4
+MAX_ALTERNATIVES: Final = 3
+MAX_ALTERNATIVE_DISCOVERY_CALLS: Final = 2
+MAX_ALTERNATIVE_DETAILS: Final = 6
+MAX_ALTERNATIVE_SECONDS: Final = 15.0
 MAX_GENRE_FILTERS: Final = 20
 MAX_OVERVIEW_CHARS: Final = 1200
 MAX_REASON_CHARS: Final = 400
@@ -91,6 +103,27 @@ _CAST_ROLES: Final = frozenset({"actor", "actress", "cast", "performer", "star"}
 _DIRECTOR_ROLES: Final = frozenset({"director", "directing"})
 _WRITER_ROLES: Final = frozenset({"writer", "screenwriter", "screenplay", "writing"})
 _PRODUCER_ROLES: Final = frozenset({"producer", "production"})
+_MOOD_LIKE_TERMS: Final = frozenset(
+    {
+        "bittersweet",
+        "chilling",
+        "cozy",
+        "dark",
+        "feel good",
+        "feel-good",
+        "heartwarming",
+        "hopeful",
+        "inspiring",
+        "lighthearted",
+        "melancholic",
+        "suspense",
+        "suspenseful",
+        "tense",
+        "thought-provoking",
+        "uplifting",
+        "whimsical",
+    }
+)
 
 
 class IntentIssue(BaseModel):
@@ -113,6 +146,24 @@ class IntentMergeResult(BaseModel):
     excluded_tmdb_ids: list[int] = Field(default_factory=list)
     validation_issues: list[IntentIssue] = Field(default_factory=list)
     clarification: str | None = None
+
+
+class ResolvedPerson(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tmdb_id: int = Field(gt=0)
+    name: str = Field(min_length=1)
+    role: str | None = Field(default=None, max_length=60)
+    original_name: str | None = Field(default=None, max_length=120)
+    original_role: str | None = Field(default=None, max_length=60)
+
+
+class PeopleResolution(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    resolved: list[ResolvedPerson] = Field(default_factory=list)
+    unresolved: list[PersonConstraint] = Field(default_factory=list)
+    clarification: PendingClarification | None = None
 
 
 class AssemblyIssue(BaseModel):
@@ -152,6 +203,7 @@ class RecommendationAssembly(BaseModel):
     batch: RecommendationBatch
     issues: list[AssemblyIssue] = Field(default_factory=list)
     provider_lookups: list[ProviderLookup] = Field(default_factory=list)
+    clarification: PendingClarification | None = None
 
 
 class ExternalRatingsClient(Protocol):
@@ -174,6 +226,7 @@ def merge_intent(
     issues: list[IntentIssue] = []
     genres = _merge_collection(prior.genres, patch.genres, "genres", issues)
     moods = _merge_collection(prior.moods, patch.moods, "moods", issues)
+    genres, moods, unsupported_genres = _separate_unsupported_genres(genres, moods, issues)
     clear_filters = set(patch.clear_filters)
 
     release_year_min = None if "release_year" in clear_filters else prior.release_year_min
@@ -242,12 +295,18 @@ def merge_intent(
     exclusions = (
         _unique_positive_ids(seen_tmdb_ids) if patch.turn_kind is TurnKind.ANOTHER_SET else []
     )
+    clarification = patch.clarification
+    if unsupported_genres:
+        names = ", ".join(f"'{_display(value)}'" for value in unsupported_genres[:3])
+        clarification = (
+            f"TMDB doesn't list {names} as a genre. Did you mean a mood, or another genre?"
+        )[:240]
     return IntentMergeResult(
         intent=intent,
         turn_kind=patch.turn_kind,
         excluded_tmdb_ids=exclusions,
         validation_issues=issues,
-        clarification=patch.clarification,
+        clarification=clarification,
     )
 
 
@@ -271,8 +330,21 @@ async def assemble_recommendations(
 
     issues: list[AssemblyIssue] = []
     exclusions = _unique_positive_ids(excluded_tmdb_ids)
-    people_ids = await _resolve_people(client, intent.people, issues)
-    filters = _build_discover_filters(intent, issues, people_ids=people_ids)
+    people_resolution = await _resolve_people(client, intent.people, issues)
+    if people_resolution.clarification is not None:
+        return RecommendationAssembly(
+            batch=RecommendationBatch(
+                recommendations=[],
+                requested_count=intent.requested_count,
+            ),
+            issues=issues,
+            clarification=people_resolution.clarification,
+        )
+    filters = _build_discover_filters(
+        intent,
+        issues,
+        people=people_resolution.resolved,
+    )
     candidates = await _discover_candidates(
         client,
         filters,
@@ -285,6 +357,7 @@ async def assemble_recommendations(
     provider_lookups: list[ProviderLookup] = []
     failures: Counter[str] = Counter()
     accepted_details: list[TmdbMovieDetails] = []
+    rejected_details: list[tuple[TmdbMovieDetails, list[str]]] = []
     details_checked = 0
     next_candidate = 0
 
@@ -339,9 +412,23 @@ async def assemble_recommendations(
                 )
                 continue
 
-            failed_constraints = _hard_constraint_failures(details, intent)
+            failed_constraints = _hard_constraint_failures(
+                details,
+                intent,
+                resolved_people=people_resolution.resolved,
+            )
             if failed_constraints:
                 failures.update(failed_constraints)
+                rejected_details.append(
+                    (
+                        details,
+                        _unmet_filter_labels(
+                            details,
+                            intent,
+                            resolved_people=people_resolution.resolved,
+                        ),
+                    )
+                )
                 issues.append(
                     AssemblyIssue(
                         code="candidate_rejected",
@@ -388,10 +475,21 @@ async def assemble_recommendations(
         failures=failures,
         excluded_count=len(exclusions),
     )
+    alternatives: list[Alternative] = []
+    if len(recommendations) < intent.requested_count:
+        alternatives, alternative_lookups = await _find_alternatives(
+            client,
+            intent,
+            excluded_ids=exclusions,
+            known_ids=[candidate.tmdb_id for candidate in candidates],
+            checked_details=rejected_details,
+        )
+        provider_lookups.extend(alternative_lookups)
     batch = RecommendationBatch(
         recommendations=recommendations,
         requested_count=intent.requested_count,
         shortfall_reason=shortfall_reason,
+        alternatives=alternatives,
     )
     if omdb is not None:
         batch = await _enrich_external_ratings(batch, omdb)
@@ -469,34 +567,47 @@ async def refresh_recommendation_availability(
             country=normalized_country,
         )
 
-    provider_results = await _gather_bounded(batch.recommendations, load_provider)
-    recommendations: list[Recommendation] = []
-    provider_lookups: list[ProviderLookup] = []
-    for recommendation, (watch_options, lookup, provider_caveats) in zip(
-        batch.recommendations,
-        provider_results,
-        strict=True,
-    ):
+    alternative_items = [item.recommendation for item in batch.alternatives]
+    all_recommendations = [*batch.recommendations, *alternative_items]
+    provider_results = await _gather_bounded(all_recommendations, load_provider)
+
+    def refreshed_recommendation(
+        recommendation: Recommendation,
+        provider_result: tuple[WatchOptions | None, ProviderLookup, list[str]],
+    ) -> Recommendation:
+        watch_options, lookup, provider_caveats = provider_result
         provider_lookups.append(lookup)
         retained_caveats = [
             caveat for caveat in recommendation.caveats if not _is_provider_caveat(caveat)
         ]
         caveats = _dedupe_texts([*retained_caveats, *provider_caveats])[:MAX_CAVEATS]
-        recommendations.append(
-            recommendation.model_copy(
-                update={
-                    "movie": recommendation.movie.model_copy(
-                        update={"watch_options": watch_options}
-                    ),
-                    "caveats": caveats,
-                }
-            )
+        return recommendation.model_copy(
+            update={
+                "movie": recommendation.movie.model_copy(update={"watch_options": watch_options}),
+                "caveats": caveats,
+            }
         )
+
+    recommendations: list[Recommendation] = []
+    provider_lookups: list[ProviderLookup] = []
+    for index, recommendation in enumerate(batch.recommendations):
+        recommendations.append(refreshed_recommendation(recommendation, provider_results[index]))
+    alternatives = [
+        Alternative(
+            recommendation=refreshed_recommendation(
+                item.recommendation,
+                provider_results[len(batch.recommendations) + index],
+            ),
+            unmet_filters=item.unmet_filters,
+        )
+        for index, item in enumerate(batch.alternatives)
+    ]
 
     refreshed = RecommendationBatch(
         recommendations=recommendations,
         requested_count=batch.requested_count,
         shortfall_reason=batch.shortfall_reason,
+        alternatives=alternatives,
     )
     return RecommendationAssembly(batch=refreshed, provider_lookups=provider_lookups)
 
@@ -522,6 +633,47 @@ async def _gather_bounded[ItemT, ResultT](
         batch = items[start : start + MAX_CONCURRENT_TMDB_REQUESTS]
         results.extend(await asyncio.gather(*(operation(item) for item in batch)))
     return results
+
+
+def _separate_unsupported_genres(
+    genres: Sequence[str],
+    moods: Sequence[str],
+    issues: list[IntentIssue],
+) -> tuple[list[str], list[str], list[str]]:
+    """Move known mood terms out of genres; leave other unknown labels for clarification."""
+
+    supported: list[str] = []
+    moved_moods: list[str] = []
+    unsupported: list[str] = []
+    for genre in genres:
+        if _canonical_genre(genre) in _GENRE_IDS:
+            supported.append(genre)
+        elif _collection_key(genre) in _MOOD_LIKE_TERMS:
+            moved_moods.append(genre)
+        else:
+            unsupported.append(genre)
+
+    if not moved_moods:
+        return supported + unsupported, list(moods), unsupported
+
+    existing = {_collection_key(value) for value in moods}
+    resolved_moods = list(moods)
+    for value in moved_moods:
+        key = _collection_key(value)
+        if key not in existing:
+            existing.add(key)
+            resolved_moods.append(value)
+    issues.append(
+        IntentIssue(
+            code="mood_moved_from_genre",
+            field="genres",
+            message=(
+                "One or more genre labels have no TMDB genre; they were kept as soft "
+                "mood preferences."
+            ),
+        )
+    )
+    return supported + unsupported, resolved_moods, unsupported
 
 
 def _merge_collection(
@@ -607,8 +759,17 @@ def _build_discover_filters(
     intent: MovieIntent,
     issues: list[AssemblyIssue],
     *,
-    people_ids: Sequence[int] = (),
+    people: Sequence[ResolvedPerson] = (),
 ) -> TmdbDiscoverFilters:
+    cast_ids: list[int] = []
+    crew_ids: list[int] = []
+    for person in people:
+        role = _collection_key(person.role or "")
+        if role in _DIRECTOR_ROLES or role in _WRITER_ROLES or role in _PRODUCER_ROLES:
+            if person.tmdb_id not in crew_ids:
+                crew_ids.append(person.tmdb_id)
+        elif person.tmdb_id not in cast_ids:
+            cast_ids.append(person.tmdb_id)
     return TmdbDiscoverFilters(
         release_year_min=intent.release_year_min,
         release_year_max=intent.release_year_max,
@@ -616,7 +777,8 @@ def _build_discover_filters(
         runtime_max_minutes=intent.runtime_max_minutes,
         tmdb_rating_min=intent.tmdb_rating_min,
         genre_ids=_resolve_genre_ids(intent.genres, issues),
-        people_ids=list(people_ids),
+        people_ids=cast_ids,
+        crew_ids=crew_ids,
     )
 
 
@@ -624,50 +786,191 @@ async def _resolve_people(
     client: TmdbClient,
     people: Sequence[PersonConstraint],
     issues: list[AssemblyIssue],
-) -> list[int]:
+) -> PeopleResolution:
     async def resolve(
         person: PersonConstraint,
-    ) -> tuple[int | None, AssemblyIssue | None]:
+    ) -> tuple[ResolvedPerson | None, PendingClarification | None, AssemblyIssue | None]:
+        if person.tmdb_id is not None:
+            return (
+                ResolvedPerson(
+                    tmdb_id=person.tmdb_id,
+                    name=person.name,
+                    role=person.role,
+                    original_name=person.name,
+                    original_role=person.role,
+                ),
+                None,
+                None,
+            )
         try:
             page = await client.search_people(person.name)
         except TmdbError:
-            return None, AssemblyIssue(
-                code="person_lookup_failed",
-                field="people",
-                message=f"TMDB could not resolve '{_display(person.name)}'.",
+            return (
+                None,
+                None,
+                AssemblyIssue(
+                    code="person_lookup_failed",
+                    field="people",
+                    message=f"TMDB could not look up '{_display(person.name)}'.",
+                ),
             )
 
-        exact = [
-            result
-            for result in page.results
-            if _collection_key(result.name) == _collection_key(person.name)
-        ]
-        role = _collection_key(person.role or "")
-        department = _role_department(role)
-        if department is not None:
-            role_matches = [
-                result
-                for result in exact
-                if _collection_key(result.known_for_department or "") == department
-            ]
-            if role_matches:
-                exact = role_matches
+        chosen = _select_person(person, page.results)
+        if chosen is not None:
+            return (
+                ResolvedPerson(
+                    tmdb_id=chosen.tmdb_id,
+                    name=chosen.name,
+                    role=person.role,
+                    original_name=person.name,
+                    original_role=person.role,
+                ),
+                None,
+                None,
+            )
 
-        ids = _unique_positive_ids([result.tmdb_id for result in exact])
-        if len(ids) == 1:
-            return ids[0], None
-
-        code = "person_not_found" if not ids else "person_ambiguous"
-        note = "could not be found" if not ids else "matched more than one TMDB person"
-        return None, AssemblyIssue(
-            code=code,
-            field="people",
-            message=f"'{_display(person.name)}' {note}; details will still be checked.",
-        )
+        options = _person_options(person, page.results)
+        if options:
+            clarification = PendingClarification(
+                text=_person_choice_prompt(person, options),
+                options=options,
+            )
+            issue = AssemblyIssue(
+                code="person_ambiguous",
+                field="people",
+                message=(
+                    f"'{_display(person.name)}' matched more than one TMDB person; "
+                    "the user must choose a grounded identity."
+                ),
+            )
+        else:
+            clarification = PendingClarification(
+                text=(
+                    f"I couldn't ground '{_display(person.name)}' as a TMDB person. "
+                    "Check the spelling or choose a different name."
+                )[:240],
+            )
+            issue = AssemblyIssue(
+                code="person_not_found",
+                field="people",
+                message=f"'{_display(person.name)}' could not be found in TMDB.",
+            )
+        return None, clarification, issue
 
     outcomes = await _gather_bounded(people[:10], resolve)
-    issues.extend(issue for _, issue in outcomes if issue is not None)
-    return _unique_positive_ids([tmdb_id for tmdb_id, _ in outcomes if tmdb_id is not None])
+    issues.extend(outcome[2] for outcome in outcomes if outcome[2] is not None)
+    clarification = next(
+        (outcome[1] for outcome in outcomes if outcome[1] is not None),
+        None,
+    )
+    if clarification is not None:
+        return PeopleResolution(clarification=clarification)
+    return PeopleResolution(
+        resolved=[outcome[0] for outcome in outcomes if outcome[0] is not None],
+        unresolved=[people[index] for index, outcome in enumerate(outcomes) if outcome[0] is None],
+    )
+
+
+def _select_person(person: PersonConstraint, results: Sequence[TmdbPerson]) -> TmdbPerson | None:
+    candidates = list(results)
+    if not candidates:
+        return None
+    wanted = _person_key(person.name)
+    exact = [result for result in candidates if _person_key(result.name) == wanted]
+    role_department = _role_department(_collection_key(person.role or ""))
+    if role_department is not None and exact:
+        role_matches = [
+            result
+            for result in exact
+            if _collection_key(result.known_for_department or "") == role_department
+        ]
+        if len(role_matches) == 1:
+            return role_matches[0]
+        if role_matches:
+            exact = role_matches
+        elif any(result.known_for_department for result in exact):
+            return None
+
+    if len(exact) == 1:
+        return exact[0]
+    if exact:
+        return None
+
+    close = sorted(
+        candidates,
+        key=lambda result: SequenceMatcher(None, wanted, _person_key(result.name)).ratio(),
+        reverse=True,
+    )
+    if close:
+        best = SequenceMatcher(None, wanted, _person_key(close[0].name)).ratio()
+        second = (
+            SequenceMatcher(None, wanted, _person_key(close[1].name)).ratio()
+            if len(close) > 1
+            else 0.0
+        )
+        role_match_supported = (
+            role_department is None
+            or not close[0].known_for_department
+            or _collection_key(close[0].known_for_department) == role_department
+        )
+        if best >= 0.88 and best - second >= 0.04 and role_match_supported:
+            return close[0]
+    return None
+
+
+def _person_options(
+    person: PersonConstraint,
+    results: Sequence[TmdbPerson],
+) -> list[StoredClarificationOption]:
+    wanted = _person_key(person.name)
+    candidates = list(results)
+    exact = [result for result in candidates if _person_key(result.name) == wanted]
+    pool = exact or candidates
+    options: list[StoredClarificationOption] = []
+    seen: set[int] = set()
+    for result in pool:
+        if result.tmdb_id in seen:
+            continue
+        seen.add(result.tmdb_id)
+        known_for = ", ".join(result.known_for_titles[:2])
+        department = result.known_for_department or "TMDB person"
+        label = result.name
+        if known_for:
+            label = f"{label} - known for {known_for}"
+        detail = department + (f"; known for {known_for}" if known_for else "")
+        options.append(
+            StoredClarificationOption(
+                choice_id=f"person:{result.tmdb_id}",
+                kind="person",
+                label=_truncate(label, 120),
+                detail=_truncate(detail, 240),
+                tmdb_id=result.tmdb_id,
+                person_name=result.name,
+                person_role=person.role,
+                replace_name=person.name,
+                replace_role=person.role,
+            )
+        )
+        if len(options) >= 4:
+            break
+    return options if len(options) >= 2 else []
+
+
+def _person_choice_prompt(
+    person: PersonConstraint,
+    options: Sequence[StoredClarificationOption],
+) -> str:
+    labels = "; ".join(option.label for option in options)
+    return _truncate(
+        f"Which '{_display(person.name)}' did you mean? Choose one: {labels}.",
+        240,
+    )
+
+
+def _person_key(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value)
+    ascii_text = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return " ".join(re.findall(r"[a-z0-9]+", ascii_text.casefold()))
 
 
 def _role_department(role: str) -> str | None:
@@ -764,7 +1067,212 @@ async def _discover_candidates(
     return candidates
 
 
-def _hard_constraint_failures(details: TmdbMovieDetails, intent: MovieIntent) -> list[str]:
+async def _find_alternatives(
+    client: TmdbClient,
+    intent: MovieIntent,
+    *,
+    excluded_ids: Sequence[int],
+    known_ids: Sequence[int] = (),
+    checked_details: Sequence[tuple[TmdbMovieDetails, list[str]]] = (),
+) -> tuple[list[Alternative], list[ProviderLookup]]:
+    """Find at most three grounded nearby matches inside explicit call/time caps."""
+
+    try:
+        async with asyncio.timeout(MAX_ALTERNATIVE_SECONDS):
+            return await _collect_alternatives(
+                client,
+                intent,
+                excluded_ids=excluded_ids,
+                known_ids=known_ids,
+                checked_details=checked_details,
+            )
+    except TimeoutError:
+        return [], []
+
+
+async def _collect_alternatives(
+    client: TmdbClient,
+    intent: MovieIntent,
+    *,
+    excluded_ids: Sequence[int],
+    known_ids: Sequence[int] = (),
+    checked_details: Sequence[tuple[TmdbMovieDetails, list[str]]] = (),
+) -> tuple[list[Alternative], list[ProviderLookup]]:
+    seen = {*excluded_ids, *known_ids}
+    checked: list[tuple[TmdbMovieDetails, list[str]]] = list(checked_details)
+    details_checked = 0
+    discovery_calls = 0
+
+    for relaxed in _relaxation_plans(intent):
+        if len(checked) >= MAX_ALTERNATIVES:
+            break
+        if discovery_calls >= MAX_ALTERNATIVE_DISCOVERY_CALLS:
+            break
+        if details_checked >= MAX_ALTERNATIVE_DETAILS:
+            break
+        filters = _build_discover_filters(relaxed, [])
+        discovery_calls += 1
+        try:
+            page = await client.discover_movies(filters, page=1)
+        except (TmdbError, ValueError):
+            continue
+        candidates = [candidate for candidate in page.results if candidate.tmdb_id not in seen]
+        for candidate in candidates:
+            if details_checked >= MAX_ALTERNATIVE_DETAILS:
+                break
+            seen.add(candidate.tmdb_id)
+            details_checked += 1
+            try:
+                details = await client.get_movie_details(candidate.tmdb_id)
+            except TmdbError:
+                continue
+            if details.tmdb_id != candidate.tmdb_id:
+                continue
+            unmet = _unmet_filter_labels(details, intent)
+            if unmet:
+                checked.append((details, unmet))
+
+    checked.sort(key=lambda item: len(item[1]))
+    selected = checked[:MAX_ALTERNATIVES]
+    if not selected:
+        return [], []
+
+    async def load_provider(
+        details: TmdbMovieDetails,
+    ) -> tuple[WatchOptions | None, ProviderLookup, list[str]]:
+        return await _load_provider_data(
+            client,
+            tmdb_id=details.tmdb_id,
+            country=intent.country,
+        )
+
+    provider_results = await _gather_bounded([details for details, _ in selected], load_provider)
+    alternatives: list[Alternative] = []
+    provider_lookups: list[ProviderLookup] = []
+    for rank, ((details, unmet), provider_result) in enumerate(
+        zip(selected, provider_results, strict=True),
+        start=1,
+    ):
+        watch_options, provider_lookup, provider_caveats = provider_result
+        provider_lookups.append(provider_lookup)
+        alternatives.append(
+            Alternative(
+                recommendation=_build_recommendation(
+                    rank=rank,
+                    details=details,
+                    intent=intent,
+                    watch_options=watch_options,
+                    provider_caveats=provider_caveats,
+                ),
+                unmet_filters=unmet,
+            )
+        )
+    return alternatives, provider_lookups
+
+
+def _relaxation_plans(intent: MovieIntent) -> list[MovieIntent]:
+    fields: list[str] = []
+    if intent.people:
+        fields.append("people")
+    if intent.genres:
+        fields.append("genres")
+    if intent.release_year_min is not None or intent.release_year_max is not None:
+        fields.append("release_year")
+    if intent.runtime_max_minutes is not None:
+        fields.append("runtime_max_minutes")
+    if intent.tmdb_rating_min is not None:
+        fields.append("tmdb_rating_min")
+    if intent.original_language is not None:
+        fields.append("original_language")
+
+    removals: set[str] = set()
+    plans: list[MovieIntent] = []
+    for field in fields[:MAX_ALTERNATIVE_DISCOVERY_CALLS]:
+        removals.add(field)
+        updates: dict[str, Any] = {}
+        if "people" in removals:
+            updates["people"] = []
+        if "genres" in removals:
+            updates["genres"] = []
+        if "release_year" in removals:
+            updates["release_year_min"] = None
+            updates["release_year_max"] = None
+        if "runtime_max_minutes" in removals:
+            updates["runtime_max_minutes"] = None
+        if "tmdb_rating_min" in removals:
+            updates["tmdb_rating_min"] = None
+        if "original_language" in removals:
+            updates["original_language"] = None
+        plans.append(intent.model_copy(update=updates))
+    return plans
+
+
+def _unmet_filter_labels(
+    details: TmdbMovieDetails,
+    intent: MovieIntent,
+    *,
+    resolved_people: Sequence[ResolvedPerson] = (),
+) -> list[str]:
+    labels: list[str] = []
+    for person in intent.people:
+        if not _person_matches(
+            person,
+            details,
+            resolved=_resolved_for(person, resolved_people),
+        ):
+            suffix = f" ({_display(person.role)})" if person.role else ""
+            labels.append(f"person: {_display(person.name)}{suffix}")
+
+    available = {_canonical_genre(value) for value in details.genres}
+    for genre in intent.genres:
+        canonical = _canonical_genre(genre)
+        if canonical in _GENRE_IDS and canonical not in available:
+            labels.append(f"genre: {_display(genre)}")
+
+    if (
+        intent.release_year_min is not None
+        and (details.release_year is None or details.release_year < intent.release_year_min)
+    ) or (
+        intent.release_year_max is not None
+        and (details.release_year is None or details.release_year > intent.release_year_max)
+    ):
+        labels.append(_year_label(intent))
+
+    if intent.runtime_max_minutes is not None and (
+        details.runtime_minutes is None or details.runtime_minutes > intent.runtime_max_minutes
+    ):
+        labels.append(f"runtime: <= {intent.runtime_max_minutes} minutes")
+
+    if intent.tmdb_rating_min is not None and (
+        details.tmdb_rating is None or details.tmdb_rating < intent.tmdb_rating_min
+    ):
+        labels.append(f"TMDB rating: >= {intent.tmdb_rating_min:g}/10")
+
+    if intent.original_language is not None and (
+        details.original_language is None
+        or details.original_language.casefold() != intent.original_language
+    ):
+        labels.append(f"language: {intent.original_language}")
+
+    return labels
+
+
+def _year_label(intent: MovieIntent) -> str:
+    if intent.release_year_min is not None and intent.release_year_max is not None:
+        return f"year: {intent.release_year_min}-{intent.release_year_max}"
+    if intent.release_year_min is not None:
+        return f"year: >= {intent.release_year_min}"
+    if intent.release_year_max is not None:
+        return f"year: <= {intent.release_year_max}"
+    return "year"
+
+
+def _hard_constraint_failures(
+    details: TmdbMovieDetails,
+    intent: MovieIntent,
+    *,
+    resolved_people: Sequence[ResolvedPerson] = (),
+) -> list[str]:
     failures: list[str] = []
 
     if intent.release_year_min is not None and (
@@ -775,6 +1283,11 @@ def _hard_constraint_failures(details: TmdbMovieDetails, intent: MovieIntent) ->
         details.release_year is None or details.release_year > intent.release_year_max
     ):
         failures.append("year")
+    if intent.original_language is not None and (
+        details.original_language is None
+        or details.original_language.casefold() != intent.original_language
+    ):
+        failures.append("language")
     if intent.genres and not _matches_genres(intent.genres, details):
         failures.append("genres")
     if intent.runtime_max_minutes is not None and (
@@ -785,7 +1298,11 @@ def _hard_constraint_failures(details: TmdbMovieDetails, intent: MovieIntent) ->
         details.tmdb_rating is None or details.tmdb_rating < intent.tmdb_rating_min
     ):
         failures.append("rating")
-    if intent.people and not _matches_people(intent.people, details):
+    if intent.people and not _matches_people(
+        intent.people,
+        details,
+        resolved_people=resolved_people,
+    ):
         failures.append("people")
 
     return list(dict.fromkeys(failures))
@@ -793,31 +1310,88 @@ def _hard_constraint_failures(details: TmdbMovieDetails, intent: MovieIntent) ->
 
 def _matches_genres(requested: Sequence[str], details: TmdbMovieDetails) -> bool:
     available = {_canonical_genre(value) for value in details.genres}
-    return all(_canonical_genre(value) in available for value in requested)
+    supported = [value for value in requested if _canonical_genre(value) in _GENRE_IDS]
+    return all(_canonical_genre(value) in available for value in supported)
 
 
-def _matches_people(people: Sequence[PersonConstraint], details: TmdbMovieDetails) -> bool:
-    return all(_person_matches(person, details) for person in people)
+def _matches_people(
+    people: Sequence[PersonConstraint],
+    details: TmdbMovieDetails,
+    *,
+    resolved_people: Sequence[ResolvedPerson] = (),
+) -> bool:
+    return all(
+        _person_matches(
+            person,
+            details,
+            resolved=_resolved_for(person, resolved_people),
+        )
+        for person in people
+    )
 
 
-def _person_matches(person: PersonConstraint, details: TmdbMovieDetails) -> bool:
+def _resolved_for(
+    person: PersonConstraint,
+    resolved_people: Sequence[ResolvedPerson],
+) -> ResolvedPerson | None:
+    wanted_name = _collection_key(person.name)
+    wanted_role = _collection_key(person.role or "")
+    for resolved in resolved_people:
+        if (
+            _collection_key(resolved.original_name or resolved.name) == wanted_name
+            and _collection_key(resolved.original_role or "") == wanted_role
+        ):
+            return resolved
+    return None
+
+
+def _person_matches(
+    person: PersonConstraint,
+    details: TmdbMovieDetails,
+    *,
+    resolved: ResolvedPerson | None = None,
+) -> bool:
     name = _collection_key(person.name)
+    role = _collection_key(person.role or "")
+    person_id = person.tmdb_id
+
+    grounded_id = resolved.tmdb_id if resolved is not None else None
+
+    def name_matches(member_name: str) -> bool:
+        if person_id is not None:
+            return False
+        return _collection_key(member_name) == name
+
+    def cast_matches(member_id: int, member_name: str) -> bool:
+        if person_id is not None:
+            return member_id == person_id
+        if grounded_id is not None and member_id == grounded_id:
+            return True
+        return name_matches(member_name)
+
+    def crew_matches(member_id: int, member_name: str) -> bool:
+        if person_id is not None:
+            return member_id == person_id
+        if grounded_id is not None and member_id == grounded_id:
+            return True
+        return name_matches(member_name)
+
     if person.role is None:
-        return any(_collection_key(member.name) == name for member in details.cast) or any(
-            _collection_key(member.name) == name for member in details.crew
+        return any(cast_matches(member.tmdb_id, member.name) for member in details.cast) or any(
+            crew_matches(member.tmdb_id, member.name) for member in details.crew
         )
 
-    role = _collection_key(person.role)
     if role in _CAST_ROLES:
-        return any(_collection_key(member.name) == name for member in details.cast)
+        return any(cast_matches(member.tmdb_id, member.name) for member in details.cast)
     if role in _DIRECTOR_ROLES:
         return any(
-            _collection_key(member.name) == name and _collection_key(member.job or "") == "director"
+            crew_matches(member.tmdb_id, member.name)
+            and _collection_key(member.job or "") == "director"
             for member in details.crew
         )
     if role in _WRITER_ROLES:
         return any(
-            _collection_key(member.name) == name
+            crew_matches(member.tmdb_id, member.name)
             and (
                 "writ" in _collection_key(member.job or "")
                 or "screenplay" in _collection_key(member.job or "")
@@ -826,11 +1400,12 @@ def _person_matches(person: PersonConstraint, details: TmdbMovieDetails) -> bool
         )
     if role in _PRODUCER_ROLES:
         return any(
-            _collection_key(member.name) == name and "producer" in _collection_key(member.job or "")
+            crew_matches(member.tmdb_id, member.name)
+            and "producer" in _collection_key(member.job or "")
             for member in details.crew
         )
     return any(
-        _collection_key(member.name) == name
+        crew_matches(member.tmdb_id, member.name)
         and (
             role in _collection_key(member.job or "")
             or role in _collection_key(member.department or "")
@@ -1107,6 +1682,8 @@ def _constraint_labels(failures: Counter[str]) -> list[str]:
     labels: list[str] = []
     if failures["year"]:
         labels.append("year")
+    if failures["language"]:
+        labels.append("language")
     if failures["genres"]:
         labels.append("genre")
     if failures["runtime"]:
@@ -1121,6 +1698,10 @@ def _constraint_labels(failures: Counter[str]) -> list[str]:
 def _canonical_genre(value: str) -> str:
     normalized = _collection_key(value)
     return _GENRE_ALIASES.get(normalized, normalized)
+
+
+def is_supported_tmdb_genre(value: str) -> bool:
+    return _canonical_genre(value) in _GENRE_IDS
 
 
 def _image_url(path: str | None) -> HttpUrl | None:
