@@ -18,19 +18,43 @@ New searches return four recommendations by default. You can request between one
 
 ```mermaid
 flowchart LR
-  viewer[Viewer] --> web[Next.js frontend]
-  web -->|API requests and streamed events| api[FastAPI backend]
-  api -->|Typed filter extraction| model[Pydantic AI and Groq]
-  api -->|Search, details, providers| tmdb[TMDB]
-  api -->|Optional ratings| omdb[OMDb]
-  api -->|Sessions, conversations, runs| db[Supabase]
-  api -->|Safe progress and results| web
+  viewer([Viewer])
+  subgraph app[Movie Agent]
+    direction TB
+    web[Next.js frontend]
+    api[FastAPI backend]
+    model[Pydantic AI + Groq]
+    web <-->|Requests · streamed events| api
+    api <-->|Typed filters| model
+  end
+  subgraph services[Connected services]
+    direction TB
+    tmdb[TMDB]
+    omdb[OMDb · optional]
+    db[(Supabase)]
+  end
+  viewer --> web
+  api -->|Search · details · providers| tmdb
+  api -->|Ratings enrichment| omdb
+  api -->|Sessions · conversations · runs| db
+  classDef visitor fill:#fff8e7,stroke:#b78a45,color:#2b251b
+  classDef appNode fill:#edf4ff,stroke:#6691c6,color:#18263a
+  classDef modelNode fill:#f5edff,stroke:#9d79be,color:#291f35
+  classDef serviceNode fill:#edf7f0,stroke:#6f9d7e,color:#1f3024
+  classDef storeNode fill:#fff0ee,stroke:#c98276,color:#35201d
+  class viewer visitor
+  class web,api appNode
+  class model modelNode
+  class tmdb,omdb serviceNode
+  class db storeNode
+  style app fill:#f8f5ef,stroke:#c8bca8,color:#2d2924
+  style services fill:#f1f6f4,stroke:#b6c9c2,color:#252d2a
 ```
 
-- **Frontend** — chat, filters, and movie cards; streams progress and results.
-- **Backend** — applies conversation updates, verifies movie facts, and coordinates provider calls.
-- **Model** — extracts typed preferences; it does not provide movie facts.
-- **Data services** — TMDB supplies movie data; OMDb optionally adds ratings; Supabase stores session and conversation state.
+- **Web app · Next.js** — conversation, filters, movie cards, and streamed updates.
+- **API · FastAPI** — session checks, recommendation flow, and movie-fact verification.
+- **Inference · Pydantic AI + Groq** — converts messages into typed preference updates.
+- **Connected services** — TMDB for movie data, OMDb for optional ratings, and Supabase for session and conversation state.
 
 ## Data Sources
 
