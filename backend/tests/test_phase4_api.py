@@ -188,6 +188,41 @@ def test_phase4_person_choice_uses_the_owned_grounded_option() -> None:
         )
 
 
+def test_phase4_person_choice_preserves_other_unresolved_people() -> None:
+    option = _pending_option("person:101", 101, "Chris Evans")
+    other_option = _pending_option("person:202", 202, "Chris Evans")
+    body = recommendations_api.RecommendationRunRequest(
+        message="Chris Evans the actor",
+        client_request_id="choice-two-actors",
+        conversation_id=uuid4(),
+        expected_version=1,
+        clarification_choice_id=option.choice_id,
+    )
+
+    intent, _ = recommendations_api._build_deterministic_turn(
+        body,
+        MovieIntent(
+            people=[
+                PersonConstraint(name="Chris Evans", role="actor"),
+                PersonConstraint(name="Riley Keough", role="actor"),
+            ]
+        ),
+        {
+            "last_clarification": "Which Chris Evans?",
+            "last_clarification_options": [
+                option.model_dump(mode="json"),
+                other_option.model_dump(mode="json"),
+            ],
+        },
+    )
+
+    assert intent is not None
+    assert [(person.name, person.tmdb_id) for person in intent.people] == [
+        ("Chris Evans", 101),
+        ("Riley Keough", None),
+    ]
+
+
 def test_phase4_title_choice_returns_grounded_reference_without_mutating_filters() -> None:
     option = StoredClarificationOption(
         choice_id="title:949",

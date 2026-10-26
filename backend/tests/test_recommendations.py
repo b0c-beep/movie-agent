@@ -938,6 +938,61 @@ async def test_ambiguous_person_returns_grounded_choices_without_discovery() -> 
 
 
 @pytest.mark.asyncio
+async def test_multiple_ambiguous_people_are_clarified_sequentially() -> None:
+    class AmbiguousPeopleClient(FakeTmdbClient):
+        async def search_people(self, name: str, *, page: int = 1) -> TmdbPersonPage:
+            self.people_calls.append(name)
+            return TmdbPersonPage(
+                page=page,
+                total_pages=1,
+                total_results=2,
+                results=[
+                    TmdbPerson(
+                        tmdb_id=101,
+                        name=name,
+                        known_for_department="Acting",
+                        known_for_titles=["First Feature"],
+                    ),
+                    TmdbPerson(
+                        tmdb_id=202,
+                        name=name,
+                        known_for_department="Acting",
+                        known_for_titles=["Second Feature"],
+                    ),
+                ],
+            )
+
+    client = AmbiguousPeopleClient()
+    first = await assemble_recommendations(
+        client,
+        MovieIntent(
+            people=[
+                PersonConstraint(name="Chris Evans", role="actor"),
+                PersonConstraint(name="Riley Keough", role="actor"),
+            ],
+            requested_count=1,
+        ),
+    )
+    second = await assemble_recommendations(
+        client,
+        MovieIntent(
+            people=[
+                PersonConstraint(name="Chris Evans", role="actor", tmdb_id=101),
+                PersonConstraint(name="Riley Keough", role="actor"),
+            ],
+            requested_count=1,
+        ),
+    )
+
+    assert first.clarification is not None
+    assert "Chris Evans" in first.clarification.text
+    assert second.clarification is not None
+    assert "Riley Keough" in second.clarification.text
+    assert client.people_calls == ["Chris Evans", "Riley Keough", "Riley Keough"]
+    assert client.discover_calls == []
+
+
+@pytest.mark.asyncio
 async def test_unrecognized_person_requests_correction_without_discovery() -> None:
     class NoPeopleClient(FakeTmdbClient):
         async def search_people(self, name: str, *, page: int = 1) -> TmdbPersonPage:
