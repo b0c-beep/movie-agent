@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from movie_agent.models.intent import MovieIntent
+
 ChoiceKind = Literal["person", "title"]
 
 
@@ -39,12 +41,13 @@ class StoredClarificationOption(ClarificationOption):
 
 
 class PendingClarification(BaseModel):
-    """A bounded clarification with optional owned, grounded choices."""
+    """A bounded clarification with optional choices or a proposed filter update."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     text: str = Field(min_length=1, max_length=240)
     options: list[StoredClarificationOption] = Field(default_factory=list, max_length=4)
+    proposed_intent: MovieIntent | None = None
 
     def public_options(self) -> list[ClarificationOption]:
         return [option.public() for option in self.options]

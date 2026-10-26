@@ -501,6 +501,8 @@ async def stream_recommendations(
                 similar_reference: dict[str, Any] | None = None
                 title_clarification: PendingClarification | None = None
                 excluded_tmdb_ids: Sequence[int] = ()
+                proposed_intent: MovieIntent | None = None
+                patch: MovieIntentPatch | None = None
                 if deterministic_intent is not None:
                     turn_kind = TurnKind.REFINE
                     current_intent = deterministic_intent
@@ -556,14 +558,29 @@ async def stream_recommendations(
                         clarification = (
                             None if turn_kind is TurnKind.INSPECT_RESULTS else merged.clarification
                         )
+                        if turn_kind is TurnKind.REFINE:
+                            proposed_intent = _proposed_year_replacement(prior_intent, patch)
+                            if (
+                                clarification is None
+                                and current_intent == prior_intent
+                                and _is_filter_refinement_message(body.message)
+                            ):
+                                clarification = (
+                                    "How recent should the movies be? Give me a year or range, "
+                                    "such as after 2015. I kept the current filters."
+                                )
 
                 pending = title_clarification
                 if clarification is not None and pending is None:
-                    pending = PendingClarification(text=clarification)
+                    pending = PendingClarification(
+                        text=clarification,
+                        proposed_intent=proposed_intent,
+                    )
                 elif clarification is not None and pending is not None:
                     pending = PendingClarification(
                         text=clarification[:240],
                         options=pending.options,
+                        proposed_intent=proposed_intent,
                     )
 
                 if turn_kind is TurnKind.NEW_SEARCH:
@@ -1009,6 +1026,13 @@ def _build_deterministic_turn(
 ) -> tuple[MovieIntent | None, dict[str, Any] | None]:
     """Apply an owned clarification choice and/or a deterministic filter edit."""
     if body.clarification_choice_id is None and body.filter_edit is None:
+        pending = _stored_pending(prior_state)
+        if (
+            pending is not None
+            and pending.proposed_intent is not None
+            and _is_affirmative_confirmation(body.message)
+        ):
+            return pending.proposed_intent, None
         return None, None
 
     intent = prior_intent
@@ -1061,6 +1085,52 @@ def _build_deterministic_turn(
         MovieIntentPatch(turn_kind=TurnKind.REFINE),
     ).intent
     return normalized, reference
+
+
+def _is_affirmative_confirmation(message: str) -> bool:
+    normalized = re.sub(r"[.!?]+$", "", message.strip().casefold())
+    return normalized in {"yes", "yes please", "correct", "exactly", "go ahead", "please do"}
+
+
+def _is_filter_refinement_message(message: str) -> bool:
+    return (
+        re.search(
+            r"\b(newer|older|more recent|earlier|later|after|before|between|year|decade|"
+            r"change|replace|instead|narrow|loosen)\b",
+            message,
+            flags=re.IGNORECASE,
+        )
+        is not None
+    )
+
+
+def _proposed_year_replacement(
+    prior_intent: MovieIntent,
+    patch: MovieIntentPatch,
+) -> MovieIntent | None:
+    """Prepare an open-ended replacement for a confirmed, conflicting year bound."""
+    base = prior_intent
+    if (
+        patch.release_year_min is not None
+        and patch.release_year_max is None
+        and prior_intent.release_year_max is not None
+        and patch.release_year_min > prior_intent.release_year_max
+    ):
+        base = prior_intent.model_copy(update={"release_year_max": None})
+    elif (
+        patch.release_year_max is not None
+        and patch.release_year_min is None
+        and prior_intent.release_year_min is not None
+        and patch.release_year_max < prior_intent.release_year_min
+    ):
+        base = prior_intent.model_copy(update={"release_year_min": None})
+    else:
+        return None
+
+    candidate = merge_intent(base, patch.model_copy(update={"clarification": None}))
+    if candidate.validation_issues or candidate.intent == prior_intent:
+        return None
+    return candidate.intent
 
 
 def _person_choice_replaces(
@@ -1220,13 +1290,23 @@ def _stored_pending(state: dict[str, Any]) -> PendingClarification | None:
     if text is None:
         return None
     raw_options = state.get("last_clarification_options")
-    if raw_options is None:
-        return PendingClarification(text=text)
+    raw_proposed_intent = state.get("last_clarification_proposed_intent")
     if not isinstance(raw_options, list):
-        raise ValueError("Stored clarification options are malformed")
+        if raw_options is not None:
+            raise ValueError("Stored clarification options are malformed")
+        raw_options = []
     try:
         options = [StoredClarificationOption.model_validate(item) for item in raw_options]
-        return PendingClarification(text=text, options=options if len(options) >= 2 else [])
+        proposed_intent = (
+            MovieIntent.model_validate(raw_proposed_intent)
+            if raw_proposed_intent is not None
+            else None
+        )
+        return PendingClarification(
+            text=text,
+            options=options if len(options) >= 2 else [],
+            proposed_intent=proposed_intent,
+        )
     except Exception as error:
         raise ValueError("Stored clarification options are malformed") from error
 
@@ -1242,11 +1322,18 @@ def _set_pending_clarification(
         ]
     else:
         state.pop("last_clarification_options", None)
+    if pending.proposed_intent is None:
+        state.pop("last_clarification_proposed_intent", None)
+    else:
+        state["last_clarification_proposed_intent"] = pending.proposed_intent.model_dump(
+            mode="json"
+        )
 
 
 def _clear_pending_clarification(state: dict[str, Any]) -> None:
     state.pop("last_clarification", None)
     state.pop("last_clarification_options", None)
+    state.pop("last_clarification_proposed_intent", None)
 
 
 def _stored_history(state: dict[str, Any]) -> list[dict[str, Any]]:
