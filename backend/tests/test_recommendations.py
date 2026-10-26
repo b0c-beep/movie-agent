@@ -938,6 +938,28 @@ async def test_ambiguous_person_returns_grounded_choices_without_discovery() -> 
 
 
 @pytest.mark.asyncio
+async def test_unrecognized_person_requests_correction_without_discovery() -> None:
+    class NoPeopleClient(FakeTmdbClient):
+        async def search_people(self, name: str, *, page: int = 1) -> TmdbPersonPage:
+            self.people_calls.append(name)
+            return TmdbPersonPage(page=page, total_pages=1, total_results=0, results=[])
+
+    client = NoPeopleClient()
+    result = await assemble_recommendations(
+        client,
+        MovieIntent(people=[PersonConstraint(name="zzqv-not-a-person")], requested_count=1),
+    )
+
+    assert client.people_calls == ["zzqv-not-a-person"]
+    assert client.discover_calls == []
+    assert result.batch.recommendations == []
+    assert result.clarification is not None
+    assert result.clarification.options == []
+    assert "couldn't ground" in result.clarification.text
+    assert any(issue.code == "person_not_found" for issue in result.issues)
+
+
+@pytest.mark.asyncio
 async def test_resolved_person_id_is_verified_even_when_tmdb_name_differs() -> None:
     client = FakeTmdbClient(
         pages={1: _page(1, 1, [_candidate(1)])},

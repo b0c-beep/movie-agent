@@ -206,9 +206,11 @@ test("Cancel stops the active chat request", async ({ page }) => {
   await page.getByLabel("Message").fill("Find me a comedy");
   await page.getByRole("button", { name: "Send" }).click();
   await requestStarted;
+  await expect(page.getByLabel("Message")).toHaveValue("");
   await expect(page.getByRole("button", { name: "Cancel" })).toBeVisible();
   await page.getByRole("button", { name: "Cancel" }).click();
   await expect(page.getByRole("button", { name: "Cancel" })).toHaveCount(0);
+  await expect(page.getByLabel("Message")).toHaveValue("Find me a comedy");
   releaseRequest();
 });
 
