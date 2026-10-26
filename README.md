@@ -2,7 +2,7 @@
 
 Movie Agent helps answer the deceptively difficult question: **what should I watch tonight?** It turns conversational requests such as “give me three 1990s dark romances” or “an action movie with Sylvester Stallone” into grounded, country-aware recommendations.
 
-> Status: Phase 4.5 is merged and deployed. Both Vercel production deployments are READY at `8983cb8`; `make check`, the 12-test Playwright suite, and the frontend production build passed before merge. Phase 4 recommendation behavior remains under evaluation: a paced live retry found four genre checks needing review, while focused reruns passed after the prompt correction. Phase 5 release checks can now proceed.
+> Status: Phase 4.5 is merged and deployed. Both Vercel production deployments are READY at `0fa8893`; `make check` (130 backend and 14 frontend tests), all 12 Playwright scenarios, and the frontend production build passed before merge. Phase 4 recommendation behavior remains under evaluation: a paced live retry found four genre checks needing review, while focused reruns passed after the prompt correction. Phase 5 release checks can now proceed.
 
 ## Product Experience
 
