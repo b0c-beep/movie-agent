@@ -265,12 +265,22 @@ test("shows streamed failures without restoring or persisting a conversation poi
   expect(await page.evaluate(() => sessionStorage.getItem("movie-agent-conversation"))).toBeNull();
   expect(await page.evaluate(() => sessionStorage.getItem("movie-agent-thread:fixture-conversation"))).toBeNull();
   await expect(page.locator(".agentReply [role=alert]")).toContainText("couldn’t interpret that request");
+  await expect(page.getByLabel("Message")).toHaveValue("three comedies");
   await expect
     .poll(() => page.evaluate(() => sessionStorage.getItem("movie-agent-conversation")))
     .toBeNull();
 });
 
 test("shows a clarification prompt as an announced result state", async ({ page }) => {
+  let requestCount = 0;
+  let releaseSecondRequest!: () => void;
+  let markSecondRequestStarted!: () => void;
+  const heldSecondRequest = new Promise<void>((resolve) => {
+    releaseSecondRequest = resolve;
+  });
+  const secondRequestStarted = new Promise<void>((resolve) => {
+    markSecondRequestStarted = resolve;
+  });
   await page.route("**/api/auth/session", (route) =>
     route.fulfill({ status: 401, contentType: "application/json", body: '{"detail":"locked"}' }),
   );
@@ -285,7 +295,18 @@ test("shows a clarification prompt as an announced result state", async ({ page 
       }),
     }),
   );
-  await page.route("**/api/recommendations/stream", (route) => {
+  await page.route("**/api/recommendations/stream", async (route) => {
+    requestCount += 1;
+    if (requestCount > 1) {
+      markSecondRequestStarted();
+      await heldSecondRequest;
+      try {
+        await route.fulfill({ status: 200, contentType: "text/event-stream", body: "" });
+      } catch {
+        // The request was intentionally aborted by the Cancel control.
+      }
+      return;
+    }
     const event = (
       sequence: number,
       type: string,
@@ -353,10 +374,19 @@ test("shows a clarification prompt as an announced result state", async ({ page 
   await expect(page.locator(".turnStatus").last()).toHaveText("Needs clarification");
   const clarification = page.locator(".agentText");
   await expect(clarification.locator("p").first()).toHaveText("Which decade do you prefer?");
+  await expect(clarification.locator("p")).toHaveCount(1);
   await expect(clarification).toBeVisible();
   await expect
     .poll(() => page.evaluate(() => sessionStorage.getItem("movie-agent-conversation")))
     .toBeNull();
+  await page.getByLabel("Message").fill("1998");
+  await page.getByRole("button", { name: "Send" }).click();
+  await secondRequestStarted;
+  await expect(page.getByLabel("Message")).toHaveValue("");
+  await expect(page.getByRole("button", { name: "Cancel" })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByLabel("Message")).toHaveValue("1998");
+  releaseSecondRequest();
 });
 
 test("starts a blank conversation on reload while keeping a valid signed session", async ({ page }) => {
