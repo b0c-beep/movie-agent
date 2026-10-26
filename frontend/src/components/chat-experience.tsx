@@ -101,9 +101,7 @@ function AgentResponse({
               onChoose={onChooseClarification}
               options={result.clarification_options}
             />
-          ) : (
-            <p className="muted">Reply with the person, title, or detail you meant.</p>
-          )}
+          ) : null}
         </div>
       ) : null}
       {result?.shortfall_reason ? (
