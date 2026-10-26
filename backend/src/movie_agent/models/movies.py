@@ -39,6 +39,13 @@ class WatchOptions(BaseModel):
     buy: list[WatchProvider] = Field(default_factory=list)
 
 
+class CastMember(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tmdb_id: int = Field(gt=0)
+    name: str = Field(min_length=1)
+
+
 class MovieDetails(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -47,6 +54,7 @@ class MovieDetails(BaseModel):
     release_year: int | None = None
     runtime_minutes: int | None = Field(default=None, ge=1)
     genres: list[str] = Field(default_factory=list)
+    cast: list[CastMember] = Field(default_factory=list, max_length=10)
     overview: str = ""
     poster_url: HttpUrl | None = None
     tmdb_url: HttpUrl

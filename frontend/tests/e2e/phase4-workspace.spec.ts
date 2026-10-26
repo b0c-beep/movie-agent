@@ -159,11 +159,57 @@ test("starts blank on page load without restoring a saved conversation", async (
   await expect(page.locator(".examplePrompts ul")).toHaveCount(0);
   await expect(page.getByLabel("Chat tools")).toBeVisible();
   expect(conversationReads).toBe(0);
-  await page.setViewportSize({ width: 320, height: 760 });
-  const countryBox = await page.getByLabel("Streaming country").boundingBox();
-  expect(countryBox!.x).toBeGreaterThanOrEqual(0);
-  expect(countryBox!.x + countryBox!.width).toBeLessThanOrEqual(320);
-  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  for (const width of [1440, 1024, 768, 760, 390, 320]) {
+    await page.setViewportSize({ width, height: 760 });
+    const countryBox = await page.getByLabel("Streaming country").boundingBox();
+    expect(countryBox!.x).toBeGreaterThanOrEqual(0);
+    expect(countryBox!.x + countryBox!.width).toBeLessThanOrEqual(width);
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollWidth))
+      .toBeLessThanOrEqual(width);
+    if (width > 1024) {
+      const transcriptBox = await page.getByLabel("Conversation").boundingBox();
+      expect(countryBox!.x).toBeLessThan(transcriptBox!.x);
+    }
+    if (width <= 760) {
+      const toolsBox = await page.getByLabel("Chat tools").boundingBox();
+      const availabilityBox = await page.getByLabel("Availability settings").boundingBox();
+      const composerBox = await page.locator(".chatComposerArea").boundingBox();
+      expect(toolsBox!.y).toBeLessThan(availabilityBox!.y);
+      expect(availabilityBox!.y).toBeLessThan(composerBox!.y);
+    }
+  }
+});
+
+test("Cancel stops the active chat request", async ({ page }) => {
+  await authenticate(page);
+  await capabilities(page, true);
+  let releaseRequest!: () => void;
+  let markStarted!: () => void;
+  const heldRequest = new Promise<void>((resolve) => {
+    releaseRequest = resolve;
+  });
+  const requestStarted = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  await page.route("**/api/recommendations/stream", async (route) => {
+    markStarted();
+    await heldRequest;
+    try {
+      await route.fulfill({ status: 200, contentType: "text/event-stream", body: "" });
+    } catch {
+      // The request was intentionally aborted by the Cancel control.
+    }
+  });
+
+  await page.goto("/");
+  await page.getByLabel("Message").fill("Find me a comedy");
+  await page.getByRole("button", { name: "Send" }).click();
+  await requestStarted;
+  await expect(page.getByRole("button", { name: "Cancel" })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByRole("button", { name: "Cancel" })).toHaveCount(0);
+  releaseRequest();
 });
 
 test("keeps chat scroll position while reading older activity", async ({
@@ -293,7 +339,21 @@ test("sends structured clarification choices and filter edits when the backend s
         ]
       : [
       traceEvent(runId, 1, "run_started", "predict", "Starting a search"),
-      traceEvent(runId, 2, "recommendations", "complete", "Prepared one pick", recommendationResult()),
+      traceEvent(
+        runId,
+        2,
+        "recommendations",
+        "complete",
+        "Prepared one pick",
+        recommendationResult({
+          alternatives: [
+            {
+              recommendation: recommendation("Closest comedy", 999001, 2001),
+              unmet_filters: ["Genre: Comedy"],
+            },
+          ],
+        }),
+      ),
       traceEvent(runId, 3, "completed", "complete", "Run completed"),
       ];
     return sseResponse(route, "fixture-support", runId, events);
@@ -312,9 +372,39 @@ test("sends structured clarification choices and filter edits when the backend s
   await expect(
     page.getByRole("button", { name: "Show details for The Truman Show" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Remove Genre Comedy filter" }).click();
+  await expect(page.locator(".activeFilters")).toContainText("Use country selector");
+  await expect(page.locator(".activeFilters")).not.toContainText("Managed above");
+  await page.getByRole("button", { name: "Edit Results requested filter" }).click();
+  const editor = page.locator(".filterEditForm");
+  const editorBox = await editor.boundingBox();
+  const filterRailBox = await page.locator(".activeFilters").boundingBox();
+  expect(editorBox!.x).toBeGreaterThanOrEqual(filterRailBox!.x);
+  expect(editorBox!.x + editorBox!.width).toBeLessThanOrEqual(
+    filterRailBox!.x + filterRailBox!.width,
+  );
+  await page.getByRole("button", { name: "Cancel edit" }).click();
+  await expect(editor).toHaveCount(0);
+  await page.getByRole("button", { name: "Edit Results requested filter" }).click();
+  await page.getByLabel("New results requested").fill("2");
+  await page.getByRole("button", { name: "Save filter" }).click();
   await expect.poll(() => requests.length).toBe(3);
   expect(requests[2].filter_edit).toEqual({
+    field: "requested_count",
+    operation: "set",
+    value: 2,
+  });
+  await page.getByRole("button", { name: "Remove Genre Comedy filter" }).click();
+  await expect.poll(() => requests.length).toBe(4);
+  expect(requests[3].filter_edit).toEqual({
+    field: "genres",
+    operation: "remove",
+    value: "Comedy",
+  });
+  const latestTurn = page.locator(".chatTurn").last();
+  await expect(latestTurn.getByRole("heading", { name: "Closest alternatives" })).toBeVisible();
+  await latestTurn.getByRole("button", { name: "Remove filter: Genre: Comedy" }).click();
+  await expect.poll(() => requests.length).toBe(5);
+  expect(requests[4].filter_edit).toEqual({
     field: "genres",
     operation: "remove",
     value: "Comedy",

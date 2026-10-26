@@ -328,6 +328,13 @@ describe("phase 4 conversation workspace", () => {
   });
 
   it("shows exact results and closest alternatives with every unmet filter", async () => {
+    mocks.getRecommendationCapabilities.mockResolvedValue({
+      history: true,
+      structured_clarification: true,
+      filter_edit: true,
+      alternatives: true,
+      run_status: true,
+    });
     useConversation("conv-alternatives", 2, {
       result: result({
         alternatives: [
@@ -351,7 +358,7 @@ describe("phase 4 conversation workspace", () => {
         { recommendation: recommendation("Moon", 17431, 2009), unmet_filters: ["Genre: Comedy"] },
       ],
     });
-    mockStream(() => [
+    const calls = mockStream(() => [
       traceEvent("run_started", 1),
       traceEvent("recommendations", 2, { data: alternatives }),
       traceEvent("completed", 3),
@@ -367,7 +374,14 @@ describe("phase 4 conversation workspace", () => {
     expect(screen.getAllByText("Genre: Comedy").length).toBeGreaterThan(0);
     expect(screen.getByText("Year: 1990s")).toBeInTheDocument();
     expect(screen.getAllByText("Closest alternative")).toHaveLength(2);
-    expect(screen.getAllByRole("button", { name: "Relax" })).toHaveLength(3);
+    expect(screen.getAllByRole("button", { name: /Remove filter:/ })).toHaveLength(3);
+    fireEvent.click(screen.getAllByRole("button", { name: "Remove filter: Genre: Comedy" })[0]);
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].filterEdit).toEqual({
+      field: "genres",
+      operation: "remove",
+      value: "Comedy",
+    });
   });
 
   it("reports model rate limiting with a safe retry hint", async () => {

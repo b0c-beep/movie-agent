@@ -38,6 +38,22 @@ export function MovieCard({
     (item) => item.source !== "tmdb" && item.value != null,
   );
   const genres = movie.genres ?? [];
+  const cast = movie.cast ?? [];
+  const requestedActors = new Set(
+    (recommendation.matched_constraints ?? [])
+      .filter((constraint) => constraint.startsWith("person:"))
+      .map((constraint) =>
+        constraint
+          .slice("person:".length)
+          .replace(/\s+\([^)]*\)$/, "")
+          .trim()
+          .toLocaleLowerCase(),
+      ),
+  );
+  const requestedCast = cast.filter((member) => requestedActors.has(member.name.toLocaleLowerCase()));
+  const supportingCast = cast
+    .filter((member) => !requestedActors.has(member.name.toLocaleLowerCase()))
+    .slice(0, 5);
   const providerGroups = movie.watch_options
     ? [
         ["Subscription", movie.watch_options.subscription],
@@ -93,71 +109,100 @@ export function MovieCard({
             Close
           </button>
         </div>
-        <div className="movieInfo">
-          <p className="movieMeta">
-            {movie.release_year ?? "Year unknown"}
-            {movie.runtime_minutes ? ` · ${movie.runtime_minutes} min` : ""}
-          </p>
-          <p className="movieGenres">
-            {genres.length ? genres.join(" · ") : "Genres not listed."}
-          </p>
-          <div className="movieRatings">
-            <p className="movieRating">
-              TMDB ·{" "}
-              {tmdbRating?.value == null
-                ? "Not rated"
-                : ratingValue(tmdbRating.value, tmdbRating.scale)}
-              {tmdbRating?.vote_count
-                ? ` · ${tmdbRating.vote_count.toLocaleString()} votes`
-                : ""}
+        <div className="movieDialogBody">
+          <div className="movieDialogPoster">
+            {movie.poster_url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                alt={`${movie.title} poster`}
+                height={750}
+                loading="lazy"
+                src={movie.poster_url}
+                width={500}
+              />
+            ) : (
+              <span className="posterFallback">Poster unavailable</span>
+            )}
+          </div>
+          <div className="movieInfo">
+            <p className="movieMeta">
+              {movie.release_year ?? "Year unknown"}
+              {movie.runtime_minutes ? ` · ${movie.runtime_minutes} min` : ""}
             </p>
-            {externalRatings.map((rating) => (
-              <p className="externalRating" key={rating.source}>
-                {ratingLabel(rating.source)} · {ratingValue(rating.value as number, rating.scale)}
-                {rating.vote_count ? ` · ${rating.vote_count.toLocaleString()} votes` : ""}
+            <p className="movieGenres">
+              {genres.length ? genres.join(" · ") : "Genres not listed."}
+            </p>
+            {cast.length ? (
+              <div className="movieCast">
+                <strong>Cast</strong>
+                {requestedCast.map((member) => (
+                  <span key={member.tmdb_id}>
+                    {member.name} <span className="requestedActor">Requested</span>
+                  </span>
+                ))}
+                {supportingCast.map((member) => (
+                  <span key={member.tmdb_id}>{member.name}</span>
+                ))}
+              </div>
+            ) : null}
+            <div className="movieRatings">
+              <p className="movieRating">
+                TMDB ·{" "}
+                {tmdbRating?.value == null
+                  ? "Not rated"
+                  : ratingValue(tmdbRating.value, tmdbRating.scale)}
+                {tmdbRating?.vote_count
+                  ? ` · ${tmdbRating.vote_count.toLocaleString()} votes`
+                  : ""}
+              </p>
+              {externalRatings.map((rating) => (
+                <p className="externalRating" key={rating.source}>
+                  {ratingLabel(rating.source)} · {ratingValue(rating.value as number, rating.scale)}
+                  {rating.vote_count ? ` · ${rating.vote_count.toLocaleString()} votes` : ""}
+                </p>
+              ))}
+            </div>
+            <p className="movieOverview">{movie.overview || "No overview available."}</p>
+            <p className="matchReason">{recommendation.match_reason}</p>
+            <p className="movieLinks">
+              <a href={movie.tmdb_url} rel="noreferrer" target="_blank">
+                TMDB page
+              </a>
+              {movie.imdb_url ? (
+                <a href={movie.imdb_url} rel="noreferrer" target="_blank">
+                  IMDb page
+                </a>
+              ) : null}
+            </p>
+            <ProviderAvailability lookup={providerLookup} />
+            {providerGroups.map(([label, providers]) =>
+              providers.length ? (
+                <p className="providers" key={label}>
+                  <strong>{label}:</strong>
+                  {providers.map((provider) => (
+                    <span className="providerBadge" key={provider.provider_id}>
+                      {provider.logo_path ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          alt=""
+                          height={24}
+                          loading="lazy"
+                          src={`https://image.tmdb.org/t/p/w92${provider.logo_path}`}
+                          width={24}
+                        />
+                      ) : null}
+                      {provider.name}
+                    </span>
+                  ))}
+                </p>
+              ) : null,
+            )}
+            {caveats.map((caveat) => (
+              <p className="caveat" key={caveat}>
+                {caveat}
               </p>
             ))}
           </div>
-          <p className="movieOverview">{movie.overview || "No overview available."}</p>
-          <p className="matchReason">{recommendation.match_reason}</p>
-          <p className="movieLinks">
-            <a href={movie.tmdb_url} rel="noreferrer" target="_blank">
-              TMDB page
-            </a>
-            {movie.imdb_url ? (
-              <a href={movie.imdb_url} rel="noreferrer" target="_blank">
-                IMDb page
-              </a>
-            ) : null}
-          </p>
-          <ProviderAvailability lookup={providerLookup} />
-          {providerGroups.map(([label, providers]) =>
-            providers.length ? (
-              <p className="providers" key={label}>
-                <strong>{label}:</strong>
-                {providers.map((provider) => (
-                  <span className="providerBadge" key={provider.provider_id}>
-                    {provider.logo_path ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        alt=""
-                        height={24}
-                        loading="lazy"
-                        src={`https://image.tmdb.org/t/p/w92${provider.logo_path}`}
-                        width={24}
-                      />
-                    ) : null}
-                    {provider.name}
-                  </span>
-                ))}
-              </p>
-            ) : null,
-          )}
-          {caveats.map((caveat) => (
-            <p className="caveat" key={caveat}>
-              {caveat}
-            </p>
-          ))}
         </div>
       </dialog>
     </article>

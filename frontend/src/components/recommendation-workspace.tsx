@@ -326,7 +326,7 @@ export function RecommendationWorkspace() {
       return;
     }
     void submitTurn({
-      message: `Please relax this filter: ${unmetFilter}.`,
+      message: `Please remove this filter: ${unmetFilter}.`,
       clearPrompt: false,
     });
   }
