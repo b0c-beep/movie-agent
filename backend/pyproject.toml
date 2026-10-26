@@ -7,7 +7,7 @@ dependencies = [
   "fastapi==0.162.0",
   "httpx==0.28.1",
   "pydantic==2.14.1",
-  "pydantic-ai-slim[groq]==2.61.0",
+  "pydantic-ai-slim[groq,openrouter]==2.61.0",
   "uvicorn[standard]==0.54.0",
 ]
 
