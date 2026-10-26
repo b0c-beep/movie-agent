@@ -6,7 +6,7 @@ from movie_agent.models.intent import MovieIntent, StringCollectionPatch
 
 def test_intent_defaults_and_limits() -> None:
     intent = MovieIntent()
-    assert intent.requested_count == 5
+    assert intent.requested_count == 4
     assert intent.country == "RO"
 
     with pytest.raises(ValidationError):
