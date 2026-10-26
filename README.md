@@ -13,7 +13,7 @@ Movie Agent helps answer the deceptively difficult question: **what should I wat
 - Show country-specific streaming providers and their logos.
 - Protect the demo behind a shared passcode to control API usage. A valid HttpOnly signed session cookie keeps the app unlocked across tabs and refreshes without storing the PIN; each full page load starts a blank conversation.
 
-New searches default to five recommendations and can request a different count, capped at ten. If too few verified matches exist, the app will explain the shortfall. Follow-ups can refine preferences, request another set, or ask about a displayed movie.
+New searches default to four recommendations and can request a different count, capped at ten. If too few verified matches exist, the app will explain the shortfall. Follow-ups can refine preferences, request another set, or ask about a displayed movie.
 
 ## Planned Architecture
 
@@ -61,7 +61,7 @@ Every pull request must contain at least two focused commits. Each commit may ch
 
 The chat keeps the current conversation in page memory. Every full page load starts blank; a valid signed HttpOnly cookie keeps access unlocked, and an expired or missing cookie shows the passcode form. Reloading during a run does not replay or resubmit it. A visual reset does not delete conversation or run records already stored by the backend.
 
-User turns, safe activity summaries, agent replies, movie cards, clarifications, shortfalls, alternatives, and errors appear in one chronological transcript. The transcript follows new messages only while the reader is at the bottom and offers a jump-to-latest control after scrolling up. Active filters and streaming country sit beside the composer. Ten example prompts fill the composer without sending; contextual follow-ups appear after relevant results. Country changes refresh provider data without reranking or another model call. Missing optional Phase 4 capabilities still fall back to clarification text, natural-language filter requests, and safe run recovery.
+User turns, safe activity summaries, agent replies, movie cards, clarifications, shortfalls, alternatives, and errors appear in one chronological transcript. The transcript follows new messages only while the reader is at the bottom and offers a jump-to-latest control after scrolling up. Active filters and ten example prompts share a side rail; the streaming country selector stays beside the composer. Prompts fill the composer without sending, and contextual follow-ups appear after relevant results. Movie cards show a compact poster, title, and TMDB rating; opening a card shows the full details and source links. Country changes refresh provider data without reranking or another model call. Missing optional Phase 4 capabilities still fall back to clarification text, natural-language filter requests, and safe run recovery.
 
 Prerequisites: Python 3.13, [uv](https://docs.astral.sh/uv/), Node.js 20.9 or newer, and npm. Install pinned dependencies from their lockfiles:
 
