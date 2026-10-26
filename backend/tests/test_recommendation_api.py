@@ -147,6 +147,14 @@ def test_inspect_results_asks_when_a_saved_movie_reference_is_ambiguous() -> Non
     assert "There are no saved movie cards" in answer
 
 
+def test_inspect_results_does_not_answer_unrelated_questions_from_empty_history() -> None:
+    answer = recommendations_api._answer_from_saved_results("What is the weather tomorrow?", None)
+
+    assert answer == (
+        "There are no saved movie cards in this conversation yet. Ask for recommendations first."
+    )
+
+
 @pytest.mark.asyncio
 async def test_similar_title_resolution_requires_a_grounded_exact_match() -> None:
     class SearchClient:
