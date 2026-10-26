@@ -1,7 +1,5 @@
 import type {
   ClarificationOption,
-  ConversationSnapshot,
-  ConversationTurn,
   FilterEdit,
   RecommendationResult,
   TraceEvent,
@@ -16,7 +14,6 @@ export type ThreadTurn = {
   answer: string | null;
   errorMessage: string | null;
   events: TraceEvent[];
-  restored: boolean;
 };
 
 export type ActiveFilter = {
@@ -30,9 +27,6 @@ export type ActiveFilter = {
   inputType?: "text" | "number";
   inputStep?: string;
 };
-
-const THREAD_STORAGE_PREFIX = "movie-agent-thread:";
-const MAX_LOCAL_TURNS = 20;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -335,146 +329,4 @@ export function editValueForFilter(
     return { field: filter.field, operation: "set", value: trimmed.toLowerCase() };
   }
   return { field: filter.field, operation: "set", value: trimmed };
-}
-
-function turnFromSnapshot(
-  turn: ConversationTurn,
-  index: number,
-  fallbackIntent: Record<string, unknown>,
-): ThreadTurn | null {
-  if (!isRecord(turn)) return null;
-  const userMessage = stringValue(turn.user_message);
-  if (!userMessage) return null;
-  const events = Array.isArray(turn.events) ? (turn.events as TraceEvent[]) : [];
-  const result = normalizeResult(turn.response, fallbackIntent);
-  const failedEvent = [...events].reverse().find((event) => event.type === "failed");
-  const rawStatus = stringValue(turn.status) ?? "completed";
-  const runId = stringValue(turn.run_id);
-  return {
-    id: runId ?? `restored-${index}`,
-    runId,
-    userMessage,
-    status: statusLabel(rawStatus),
-    result,
-    answer: stringValue(turn.answer),
-    errorMessage:
-      rawStatus === "failed"
-        ? failedEvent
-          ? failureMessage(failedEvent)
-          : "The recommendation run could not be completed."
-        : null,
-    events,
-    restored: true,
-  };
-}
-
-export function turnsFromSnapshot(snapshot: ConversationSnapshot): ThreadTurn[] {
-  if (!Array.isArray(snapshot.turns)) return [];
-  return snapshot.turns
-    .map((turn, index) => turnFromSnapshot(turn, index, snapshot.intent))
-    .filter((turn): turn is ThreadTurn => turn !== null);
-}
-
-export function latestResultFromTurns(turns: ThreadTurn[]): RecommendationResult | null {
-  for (let index = turns.length - 1; index >= 0; index -= 1) {
-    if (turns[index].result) return turns[index].result;
-  }
-  return null;
-}
-
-export function latestAnswerFromTurns(turns: ThreadTurn[]): string | null {
-  for (let index = turns.length - 1; index >= 0; index -= 1) {
-    if (turns[index].answer) return turns[index].answer;
-  }
-  return null;
-}
-
-export function eventsFromTurns(turns: ThreadTurn[]): TraceEvent[] {
-  const seen = new Set<string>();
-  const events: TraceEvent[] = [];
-  for (const turn of turns) {
-    for (const event of [...turn.events].sort((left, right) => left.sequence - right.sequence)) {
-      const key = event.event_id || `${event.run_id}-${event.sequence}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      events.push(event);
-    }
-  }
-  return events;
-}
-
-export function mergeRunEvents(
-  existing: TraceEvent[],
-  runId: string,
-  incoming: TraceEvent[],
-): TraceEvent[] {
-  const ordered = [...incoming].sort((left, right) => left.sequence - right.sequence);
-  const merged: TraceEvent[] = [];
-  let inserted = false;
-  for (const event of existing) {
-    if (event.run_id === runId) {
-      if (!inserted) {
-        merged.push(...ordered);
-        inserted = true;
-      }
-      continue;
-    }
-    merged.push(event);
-  }
-  if (!inserted) merged.push(...ordered);
-  return merged;
-}
-
-export function readLocalTurns(conversationId: string): ThreadTurn[] {
-  try {
-    const raw = window.sessionStorage.getItem(`${THREAD_STORAGE_PREFIX}${conversationId}`);
-    if (!raw) return [];
-    const value: unknown = JSON.parse(raw);
-    if (!Array.isArray(value)) return [];
-    return value.flatMap((item, index): ThreadTurn[] => {
-      if (!isRecord(item)) return [];
-      const userMessage = stringValue(item.user_message) ?? stringValue(item.userMessage);
-      if (!userMessage) return [];
-      const result = normalizeResult(item.result);
-      return [
-        {
-          id: stringValue(item.id) ?? `local-${index}`,
-          runId: stringValue(item.runId) ?? stringValue(item.run_id),
-          userMessage,
-          status: stringValue(item.status) ?? "Complete",
-          result,
-          answer: stringValue(item.answer),
-          errorMessage: stringValue(item.errorMessage),
-          events: Array.isArray(item.events) ? (item.events as TraceEvent[]) : [],
-          restored: false,
-        },
-      ];
-    });
-  } catch {
-    return [];
-  }
-}
-
-export function saveLocalTurns(conversationId: string, turns: ThreadTurn[]): void {
-  try {
-    const observed = turns.filter((turn) => !turn.restored).slice(-MAX_LOCAL_TURNS);
-    if (observed.length === 0) {
-      window.sessionStorage.removeItem(`${THREAD_STORAGE_PREFIX}${conversationId}`);
-      return;
-    }
-    window.sessionStorage.setItem(
-      `${THREAD_STORAGE_PREFIX}${conversationId}`,
-      JSON.stringify(observed),
-    );
-  } catch {
-    // The in-memory thread remains available when tab storage is full or blocked.
-  }
-}
-
-export function clearLocalTurns(conversationId: string): void {
-  try {
-    window.sessionStorage.removeItem(`${THREAD_STORAGE_PREFIX}${conversationId}`);
-  } catch {
-    // Clearing tab-local history is best effort.
-  }
 }

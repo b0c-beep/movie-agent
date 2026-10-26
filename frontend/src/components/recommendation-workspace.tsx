@@ -1,19 +1,14 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { ActiveFilters } from "@/components/active-filters";
-import { ConversationThread } from "@/components/conversation-thread";
-import { ProgressTrace } from "@/components/progress-trace";
-import { RecommendationResults } from "@/components/recommendation-results";
+import { ChatExperience } from "@/components/chat-experience";
 import {
-  getConversation,
   getRecommendationCapabilities,
   getRunStatus,
   refreshConversationAvailability,
   streamRecommendations,
   type ClarificationOption,
-  type ConversationSnapshot,
   type FilterEdit,
   type RecommendationCapabilities,
   type RecommendationResult,
@@ -23,115 +18,31 @@ import { countryName } from "@/lib/countries";
 import {
   activeFilters,
   choiceMessage,
-  clearLocalTurns,
-  eventsFromTurns,
   failureMessage,
   filterEditMessage,
   interruptionMessage,
-  latestAnswerFromTurns,
-  latestResultFromTurns,
-  mergeRunEvents,
   normalizeResult,
-  readLocalTurns,
   requestErrorMessage,
-  saveLocalTurns,
   statusLabel,
-  turnsFromSnapshot,
   type ThreadTurn,
 } from "@/lib/workspace";
 
-const CONVERSATION_STORAGE_KEY = "movie-agent-conversation";
-
 type SavedConversation = { id: string; version: number };
-
-function readSavedConversation(): SavedConversation | null {
-  try {
-    const raw = window.sessionStorage.getItem(CONVERSATION_STORAGE_KEY);
-    if (!raw) return null;
-    const value: unknown = JSON.parse(raw);
-    if (
-      typeof value === "object" &&
-      value !== null &&
-      "id" in value &&
-      typeof value.id === "string" &&
-      "version" in value &&
-      typeof value.version === "number"
-    ) {
-      return { id: value.id, version: value.version };
-    }
-  } catch {
-    // A fresh conversation is safer than restoring a malformed tab pointer.
-  }
-  saveConversation(null);
-  return null;
-}
-
-function saveConversation(conversation: SavedConversation | null) {
-  try {
-    if (conversation) {
-      window.sessionStorage.setItem(CONVERSATION_STORAGE_KEY, JSON.stringify(conversation));
-    } else {
-      window.sessionStorage.removeItem(CONVERSATION_STORAGE_KEY);
-    }
-  } catch {
-    // The current tab continues in memory if browser storage is unavailable.
-  }
-}
-
-function resultFromSnapshot(snapshot: ConversationSnapshot): RecommendationResult | null {
-  if (snapshot.result) {
-    return normalizeResult(
-      {
-        ...snapshot.result,
-        intent: snapshot.intent,
-        clarification: snapshot.clarification ?? undefined,
-        clarification_options: snapshot.clarification_options,
-        issues: snapshot.issues ?? [],
-        provider_lookups: snapshot.provider_lookups ?? [],
-      },
-      snapshot.intent,
-    );
-  }
-  if (snapshot.clarification) {
-    return normalizeResult(
-      {
-        intent: snapshot.intent,
-        recommendations: [],
-        requested_count:
-          typeof snapshot.intent.requested_count === "number"
-            ? snapshot.intent.requested_count
-            : 5,
-        shortfall_reason: null,
-        clarification: snapshot.clarification,
-        clarification_options: snapshot.clarification_options,
-        issues: snapshot.issues ?? [],
-        provider_lookups: snapshot.provider_lookups ?? [],
-      },
-      snapshot.intent,
-    );
-  }
-  return null;
-}
 
 export function RecommendationWorkspace() {
   const [message, setMessage] = useState("");
+  const [selectedCountry, setSelectedCountry] = useState("RO");
   const [conversation, setConversation] = useState<SavedConversation | null>(null);
   const [turns, setTurns] = useState<ThreadTurn[]>([]);
-  const [events, setEvents] = useState<TraceEvent[]>([]);
   const [result, setResult] = useState<RecommendationResult | null>(null);
-  const [answer, setAnswer] = useState<string | null>(null);
-  const [status, setStatus] = useState("Ready");
   const [isRunning, setIsRunning] = useState(false);
   const [isRefreshingAvailability, setIsRefreshingAvailability] = useState(false);
   const [isRecovering, setIsRecovering] = useState(false);
-  const [historyRestored, setHistoryRestored] = useState(false);
   const [capabilities, setCapabilities] = useState<RecommendationCapabilities | null>(null);
   const [availabilityError, setAvailabilityError] = useState<string | null>(null);
   const [availabilityNotice, setAvailabilityNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const turnsRef = useRef<ThreadTurn[]>([]);
-  const conversationId = conversation?.id;
 
   function commitTurns(next: ThreadTurn[]) {
     turnsRef.current = next;
@@ -143,60 +54,10 @@ export function RecommendationWorkspace() {
     getRecommendationCapabilities().then((next) => {
       if (active) setCapabilities(next);
     });
-    const timeout = window.setTimeout(() => {
-      const saved = readSavedConversation();
-      if (saved) setConversation(saved);
-    }, 0);
     return () => {
       active = false;
-      window.clearTimeout(timeout);
     };
   }, []);
-
-  useEffect(() => {
-    if (!conversationId) return;
-    let active = true;
-    getConversation(conversationId)
-      .then((snapshot) => {
-        if (!active) return;
-        if (!snapshot) {
-          setConversation(null);
-          setResult(null);
-          setTurns([]);
-          turnsRef.current = [];
-          saveConversation(null);
-          return;
-        }
-        const restoredConversation = {
-          id: snapshot.conversation_id,
-          version: snapshot.version,
-        };
-        setConversation(restoredConversation);
-        saveConversation(restoredConversation);
-        const serverTurns = turnsFromSnapshot(snapshot);
-        const localTurns = serverTurns.length ? [] : readLocalTurns(conversationId);
-        const nextTurns = serverTurns.length ? serverTurns : localTurns;
-        turnsRef.current = nextTurns;
-        setTurns(nextTurns);
-        setHistoryRestored(serverTurns.length > 0);
-        const restoredResult =
-          latestResultFromTurns(nextTurns) ?? resultFromSnapshot(snapshot);
-        setResult(restoredResult);
-        setAnswer(latestAnswerFromTurns(nextTurns));
-        const restoredEvents = eventsFromTurns(nextTurns);
-        if (restoredEvents.length) setEvents(restoredEvents);
-      })
-      .catch((reason) => {
-        if (active) {
-          setError(
-            requestErrorMessage(reason, "Could not restore this conversation. Start a new search."),
-          );
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [conversationId]);
 
   async function submitTurn(options: {
     message: string;
@@ -220,14 +81,10 @@ export function RecommendationWorkspace() {
       answer: null,
       errorMessage: null,
       events: [],
-      restored: false,
     };
     commitTurns([...turnsRef.current, pendingTurn]);
-    setError(null);
     setAvailabilityError(null);
     setAvailabilityNotice(null);
-    setAnswer(null);
-    setStatus("Starting");
     setIsRunning(true);
     const runEvents: TraceEvent[] = [];
     const terminal: { event: TraceEvent | null } = { event: null };
@@ -251,12 +108,9 @@ export function RecommendationWorkspace() {
         },
         (nextEvent) => {
           runEvents.push(nextEvent);
-          setEvents((current) => [...current, nextEvent]);
           if (nextEvent.type === "failed") {
             terminal.event = nextEvent;
             const failure = failureMessage(nextEvent);
-            setStatus("Failed");
-            setError(failure);
             updateCurrentTurn((turn) => ({
               ...turn,
               status: "Failed",
@@ -267,7 +121,6 @@ export function RecommendationWorkspace() {
           }
           if (nextEvent.type === "cancelled") {
             terminal.event = nextEvent;
-            setStatus("Cancelled");
             updateCurrentTurn((turn) => ({
               ...turn,
               status: "Cancelled",
@@ -278,7 +131,6 @@ export function RecommendationWorkspace() {
           if (nextEvent.type === "needs_clarification") {
             terminal.event = nextEvent;
             const normalized = normalizeResult(nextEvent.data, currentIntent);
-            setStatus("Needs clarification");
             if (normalized) setResult(normalized);
             updateCurrentTurn((turn) => ({
               ...turn,
@@ -304,8 +156,6 @@ export function RecommendationWorkspace() {
           if (nextEvent.type === "completed") {
             const nextAnswer =
               typeof nextEvent.data?.answer === "string" ? nextEvent.data.answer : null;
-            if (nextAnswer) setAnswer(nextAnswer);
-            setStatus("Complete");
             updateCurrentTurn((turn) => ({
               ...turn,
               status: "Complete",
@@ -314,7 +164,6 @@ export function RecommendationWorkspace() {
             }));
             return;
           }
-          setStatus(statusLabel(nextEvent.type));
           updateCurrentTurn((turn) => ({
             ...turn,
             status: statusLabel(nextEvent.type),
@@ -334,17 +183,13 @@ export function RecommendationWorkspace() {
         version: (conversation?.version ?? 1) + 1,
       };
       setConversation(nextConversation);
-      saveConversation(nextConversation);
       const finalStatus =
         terminal.event?.type === "needs_clarification" ? "Needs clarification" : "Complete";
-      setStatus(finalStatus);
       updateCurrentTurn((turn) => ({ ...turn, status: finalStatus }));
-      saveLocalTurns(nextConversation.id, turnsRef.current);
       if (options.clearPrompt !== false) setMessage("");
     } catch (reason) {
       if (terminal.event) return;
       if (controller.signal.aborted) {
-        setStatus("Cancelled");
         updateCurrentTurn((turn) => ({ ...turn, status: "Cancelled" }));
         return;
       }
@@ -361,7 +206,6 @@ export function RecommendationWorkspace() {
         }
         if (supportsRunStatus) {
           setIsRecovering(true);
-          setStatus("Checking saved run");
           try {
             const recoveredRun = await getRunStatus(runId);
             if (recoveredRun) {
@@ -370,7 +214,6 @@ export function RecommendationWorkspace() {
                 ? recoveredRun.events
                 : [];
               if (recoveredEvents.length) {
-                setEvents((current) => mergeRunEvents(current, runId as string, recoveredEvents));
               }
               const recoveredResult = normalizeResult(recoveredRun.response, currentIntent);
               const recoveredLabel = statusLabel(recoveredRun.status);
@@ -381,8 +224,6 @@ export function RecommendationWorkspace() {
                 const failure = failedEvent
                   ? failureMessage(failedEvent)
                   : "The recommendation run could not be completed.";
-                setStatus("Failed");
-                setError(failure);
                 updateCurrentTurn((turn) => ({
                   ...turn,
                   status: "Failed",
@@ -391,7 +232,6 @@ export function RecommendationWorkspace() {
                   runId,
                 }));
               } else if (recoveredRun.status === "cancelled") {
-                setStatus("Cancelled");
                 updateCurrentTurn((turn) => ({
                   ...turn,
                   status: "Cancelled",
@@ -403,8 +243,6 @@ export function RecommendationWorkspace() {
                 recoveredRun.status === "needs_clarification"
               ) {
                 if (recoveredResult) setResult(recoveredResult);
-                setStatus(recoveredLabel);
-                setError(null);
                 updateCurrentTurn((turn) => ({
                   ...turn,
                   status: recoveredLabel,
@@ -417,12 +255,8 @@ export function RecommendationWorkspace() {
                   version: recoveredRun.version,
                 };
                 setConversation(nextConversation);
-                saveConversation(nextConversation);
-                saveLocalTurns(nextConversation.id, turnsRef.current);
               } else {
                 const notice = interruptionMessage(true);
-                setStatus("Interrupted");
-                setError(notice);
                 updateCurrentTurn((turn) => ({
                   ...turn,
                   status: "Interrupted",
@@ -449,8 +283,6 @@ export function RecommendationWorkspace() {
       const failure = networkInterruption
         ? interruptionMessage(false)
         : requestErrorMessage(reason, "The recommendation request failed.");
-      setStatus(networkInterruption ? "Interrupted" : "Failed");
-      setError(failure);
       updateCurrentTurn((turn) => ({
         ...turn,
         status: networkInterruption ? "Interrupted" : "Failed",
@@ -459,11 +291,6 @@ export function RecommendationWorkspace() {
     } finally {
       setIsRunning(false);
     }
-  }
-
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    void submitTurn({ message });
   }
 
   function chooseClarification(option: ClarificationOption) {
@@ -504,32 +331,24 @@ export function RecommendationWorkspace() {
     });
   }
 
-  function focusActiveFilters() {
-    const node = document.getElementById("active-filters");
-    node?.scrollIntoView?.({ behavior: "smooth", block: "start" });
-    node?.focus({ preventScroll: true });
-  }
-
   function startNewConversation() {
     abortRef.current?.abort();
-    if (conversation?.id) clearLocalTurns(conversation.id);
     setConversation(null);
     setTurns([]);
     turnsRef.current = [];
-    setHistoryRestored(false);
     setResult(null);
-    setAnswer(null);
-    setEvents([]);
     setMessage("");
-    setError(null);
     setAvailabilityError(null);
     setAvailabilityNotice(null);
-    setStatus("Ready");
-    saveConversation(null);
+    setSelectedCountry("RO");
   }
 
   async function changeAvailabilityCountry(country: string): Promise<boolean> {
-    if (!conversation || !result || isRunning || isRefreshingAvailability) return false;
+    if (isRunning || isRefreshingAvailability) return false;
+    if (!conversation || !result) {
+      setSelectedCountry(country);
+      return true;
+    }
     setIsRefreshingAvailability(true);
     setAvailabilityError(null);
     setAvailabilityNotice(null);
@@ -541,7 +360,7 @@ export function RecommendationWorkspace() {
       );
       const nextConversation = { id: snapshot.conversation_id, version: snapshot.version };
       setConversation(nextConversation);
-      saveConversation(nextConversation);
+      setSelectedCountry(country);
       if (snapshot.result) {
         const refreshed = normalizeResult(
           {
@@ -555,6 +374,16 @@ export function RecommendationWorkspace() {
           snapshot.intent,
         );
         if (refreshed) setResult(refreshed);
+        if (refreshed) {
+          const latestTurnId = turnsRef.current.at(-1)?.id;
+          if (latestTurnId) {
+            commitTurns(
+              turnsRef.current.map((turn) =>
+                turn.id === latestTurnId ? { ...turn, result: refreshed } : turn,
+              ),
+            );
+          }
+        }
       }
       setAvailabilityNotice(`Streaming availability updated for ${countryName(country)}.`);
       return true;
@@ -572,106 +401,24 @@ export function RecommendationWorkspace() {
   }
 
   return (
-    <main className="workspace">
-      <section className="hero">
-        <p className="eyebrow">Movie Agent · grounded picks</p>
-        <div className="workspaceHeading">
-          <div>
-            <h1>What should we watch tonight?</h1>
-            <p className="lede">
-              Describe the movie you want. Refine the results by chatting, or ask for another set.
-            </p>
-          </div>
-          {conversation ? (
-            <button className="quietButton" onClick={startNewConversation} type="button">
-              New search
-            </button>
-          ) : null}
-        </div>
-
-        <form onSubmit={handleSubmit}>
-          <label htmlFor="prompt">Tell me what you&apos;re in the mood for</label>
-          <textarea
-            id="prompt"
-            maxLength={1200}
-            minLength={1}
-            onChange={(event) => setMessage(event.target.value)}
-            placeholder="For example: three comedies with Jim Carrey"
-            required
-            rows={3}
-            value={message}
-          />
-          <div className="formActions">
-            <span>{message.length}/1200</span>
-            <div className="actionButtons">
-              {isRunning ? (
-                <button
-                  className="quietButton"
-                  onClick={() => abortRef.current?.abort()}
-                  type="button"
-                >
-                  Cancel
-                </button>
-              ) : null}
-              <button disabled={isRunning || !message.trim()} type="submit">
-                Get recommendations
-              </button>
-            </div>
-          </div>
-        </form>
-      </section>
-
-      <ConversationThread historyRestored={historyRestored} turns={turns} />
-
-      <ProgressTrace
-        error={error}
-        events={events}
-        isRunning={isRunning || isRecovering}
-        status={isRecovering ? "Checking saved run" : status}
-      />
-      {answer ? (
-        <p className="conversationAnswer" role="status">
-          {answer}
-        </p>
-      ) : null}
-
-      {result ? (
-        <>
-          <ActiveFilters
-            disabled={isRunning}
-            intent={result.intent}
-            onApplyEdit={applyFilterEdit}
-          />
-          <RecommendationResults
-            error={availabilityError}
-            isRefreshing={isRefreshingAvailability}
-            isRunning={isRunning}
-            notice={availabilityNotice}
-            onChooseClarification={chooseClarification}
-            onCountryChange={changeAvailabilityCountry}
-            onEditFilters={focusActiveFilters}
-            onRelaxFilter={relaxUnmetFilter}
-            result={result}
-          />
-        </>
-      ) : null}
-      <footer className="attribution" aria-label="Credits">
-        <a href="https://www.themoviedb.org/" rel="noreferrer" target="_blank">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            alt="TMDB"
-            height={28}
-            loading="lazy"
-            src="https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg"
-            width={28}
-          />
-        </a>
-        <span>
-          This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise
-          approved by TMDB.
-        </span>
-        <span>Streaming availability data is provided through JustWatch.</span>
-      </footer>
-    </main>
+    <ChatExperience
+      availabilityError={availabilityError}
+      availabilityNotice={availabilityNotice}
+      currentIntent={result?.intent ?? {}}
+      isRecovering={isRecovering}
+      isRefreshingAvailability={isRefreshingAvailability}
+      isRunning={isRunning}
+      message={message}
+      onApplyFilterEdit={applyFilterEdit}
+      onCancel={() => abortRef.current?.abort()}
+      onChooseClarification={chooseClarification}
+      onCountryChange={changeAvailabilityCountry}
+      onMessageChange={setMessage}
+      onNewChat={startNewConversation}
+      onRelaxFilter={relaxUnmetFilter}
+      onSend={(nextMessage) => void submitTurn({ message: nextMessage })}
+      selectedCountry={selectedCountry}
+      turns={turns}
+    />
   );
 }

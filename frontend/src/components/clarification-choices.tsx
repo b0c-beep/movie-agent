@@ -19,7 +19,7 @@ export function ClarificationChoices({
   if (options.length === 0) return null;
 
   return (
-    <fieldset className="clarificationChoices" disabled={disabled}>
+    <fieldset className="clarificationChoices" disabled={disabled} tabIndex={-1}>
       <legend>Choose the closest match</legend>
       {options.map((option) => (
         <label className="clarificationOption" key={option.choice_id}>

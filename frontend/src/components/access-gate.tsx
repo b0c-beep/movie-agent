@@ -5,13 +5,21 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { getCurrentSession, unlockApp } from "@/lib/api";
 
 type AccessState = "checking" | "locked" | "unlocked" | "unavailable";
-const ENTRY_UNLOCK_KEY = "movie-agent-entry-unlocked";
 
-function clearEntryUnlock() {
+function clearSavedConversation() {
   try {
-    window.sessionStorage.removeItem(ENTRY_UNLOCK_KEY);
+    for (let index = window.sessionStorage.length - 1; index >= 0; index -= 1) {
+      const key = window.sessionStorage.key(index);
+      if (
+        key === "movie-agent-entry-unlocked" ||
+        key === "movie-agent-conversation" ||
+        key?.startsWith("movie-agent-thread:")
+      ) {
+        window.sessionStorage.removeItem(key);
+      }
+    }
   } catch {
-    // The passcode form still gates the tab when browser storage is unavailable.
+    // The new conversation stays in memory if browser storage is unavailable.
   }
 }
 
@@ -23,44 +31,18 @@ export function AccessGate({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let active = true;
-    const timeout = window.setTimeout(() => {
-      let entryIsUnlocked = false;
-      try {
-        // Browsers copy the opener's sessionStorage into a newly opened tab.
-        // Treat that copied state as a fresh app entry, not a resumed tab.
-        if (window.opener) {
-          window.sessionStorage.removeItem(ENTRY_UNLOCK_KEY);
-          window.sessionStorage.removeItem("movie-agent-conversation");
-        }
-        entryIsUnlocked = window.sessionStorage.getItem(ENTRY_UNLOCK_KEY) === "true";
-      } catch {
-        // Without tab storage, require the passcode for this in-memory entry.
-      }
-      if (!entryIsUnlocked) {
-        setState("locked");
-        return;
-      }
-
-      getCurrentSession()
-        .then((session) => {
-          if (!active) return;
-          if (!session) {
-            clearEntryUnlock();
-            setState("locked");
-            return;
-          }
-          setState("unlocked");
-        })
-        .catch(() => {
-          if (!active) return;
-          clearEntryUnlock();
-          setError("The app could not check your session. Refresh to try again.");
-          setState("unavailable");
-        });
-    }, 0);
+    clearSavedConversation();
+    getCurrentSession()
+      .then((session) => {
+        if (active) setState(session ? "unlocked" : "locked");
+      })
+      .catch(() => {
+        if (!active) return;
+        setError("The app could not check your session. Refresh to try again.");
+        setState("unavailable");
+      });
     return () => {
       active = false;
-      window.clearTimeout(timeout);
     };
   }, []);
 
@@ -70,11 +52,6 @@ export function AccessGate({ children }: { children: ReactNode }) {
     setError(null);
     try {
       await unlockApp(passcode);
-      try {
-        window.sessionStorage.setItem(ENTRY_UNLOCK_KEY, "true");
-      } catch {
-        // The app stays unlocked in memory; a reload will ask for the passcode again.
-      }
       setPasscode("");
       setState("unlocked");
     } catch (reason) {
