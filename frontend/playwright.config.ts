@@ -6,7 +6,7 @@ export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: false,
   use: {
-    baseURL: previewBaseUrl ?? "http://127.0.0.1:3000",
+    baseURL: previewBaseUrl ?? "http://localhost:3000",
     trace: "retain-on-failure",
   },
   webServer: previewBaseUrl ? undefined : [
