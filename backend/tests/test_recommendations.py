@@ -519,6 +519,7 @@ async def test_assembly_deduplicates_preserves_rank_and_builds_observed_facts() 
             rating=8.2,
             imdb_id="tt0133093",
             poster_path="/matrix.jpg",
+            cast_names=("Keanu Reeves", "Laurence Fishburne", "Carrie-Anne Moss"),
         ),
         604: _details(604, year=1995, runtime=90, genres=["Comedy"], rating=None),
     }
@@ -540,6 +541,11 @@ async def test_assembly_deduplicates_preserves_rank_and_builds_observed_facts() 
     assert first.movie.release_year == 1999
     assert first.movie.runtime_minutes == 136
     assert first.movie.genres == ["Comedy"]
+    assert [member.name for member in first.movie.cast] == [
+        "Keanu Reeves",
+        "Laurence Fishburne",
+        "Carrie-Anne Moss",
+    ]
     assert str(first.movie.tmdb_url) == "https://www.themoviedb.org/movie/603"
     assert str(first.movie.imdb_url) == "https://www.imdb.com/title/tt0133093/"
     assert str(first.movie.poster_url) == "https://image.tmdb.org/t/p/w500/matrix.jpg"
@@ -601,6 +607,30 @@ async def test_hard_constraint_shortfalls_use_details_and_report_constraints() -
         assert expected in result.batch.shortfall_reason
     rejected = {issue.tmdb_id for issue in result.issues if issue.code == "candidate_rejected"}
     assert rejected == {1, 2, 3, 4}
+
+
+@pytest.mark.asyncio
+async def test_requested_actor_is_kept_in_bounded_movie_cast() -> None:
+    intent = MovieIntent(
+        people=[PersonConstraint(name="Requested Actor", role="actor", tmdb_id=99)],
+        requested_count=1,
+    )
+    details = _details(1, cast_names=[f"Supporting Actor {index}" for index in range(11)])
+    details = details.model_copy(
+        update={
+            "cast": [
+                *details.cast,
+                TmdbCastMember(tmdb_id=99, name="Requested Actor", order=11),
+            ]
+        }
+    )
+    client = FakeTmdbClient(pages={1: _page(1, 1, [_candidate(1)])}, details={1: details})
+
+    result = await assemble_recommendations(client, intent)
+
+    cast = result.batch.recommendations[0].movie.cast
+    assert len(cast) == 10
+    assert cast[0].name == "Requested Actor"
 
 
 @pytest.mark.asyncio
