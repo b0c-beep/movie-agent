@@ -10,7 +10,21 @@ New searches return four recommendations by default. You can request between one
 
 ## Architecture
 
-The Next.js frontend streams requests to a portable FastAPI backend. Pydantic AI uses Groq to extract typed intent; the backend uses TMDB for movie facts, optionally enriches ratings with OMDb, verifies hard constraints, and stores anonymous sessions, conversations, and runs in Supabase.
+```mermaid
+flowchart LR
+  viewer[Viewer] --> web[Next.js frontend]
+  web -->|API requests and streamed events| api[FastAPI backend]
+  api -->|Typed filter extraction| model[Pydantic AI and Groq]
+  api -->|Search, details, providers| tmdb[TMDB]
+  api -->|Optional ratings| omdb[OMDb]
+  api -->|Sessions, conversations, runs| db[Supabase]
+  api -->|Safe progress and results| web
+```
+
+- **Frontend** — chat, filters, and movie cards; streams progress and results.
+- **Backend** — applies conversation updates, verifies movie facts, and coordinates provider calls.
+- **Model** — extracts typed preferences; it does not provide movie facts.
+- **Data services** — TMDB supplies movie data; OMDb optionally adds ratings; Supabase stores session and conversation state.
 
 ## Data Sources
 
