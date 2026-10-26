@@ -11,6 +11,7 @@ class TurnKind(StrEnum):
     REFINE = "refine"
     ANOTHER_SET = "another_set"
     INSPECT_RESULTS = "inspect_results"
+    OUT_OF_SCOPE = "out_of_scope"
 
 
 class PersonConstraint(BaseModel):

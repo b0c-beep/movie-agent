@@ -48,3 +48,16 @@ async def test_intent_agent_rejects_empty_or_oversized_messages() -> None:
         await extract_intent_patch("  ", prior, model=TestModel())
     with pytest.raises(ValueError, match="1-1200"):
         await extract_intent_patch("x" * 1201, prior, model=TestModel())
+
+
+@pytest.mark.asyncio
+async def test_intent_agent_supports_an_out_of_scope_turn_kind() -> None:
+    patch = await extract_intent_patch(
+        "What is the weather tomorrow?",
+        MovieIntent(),
+        model=TestModel(custom_output_args={"turn_kind": "out_of_scope"}),
+    )
+
+    assert patch.turn_kind is TurnKind.OUT_OF_SCOPE
+    assert patch.people is None
+    assert patch.genres is None

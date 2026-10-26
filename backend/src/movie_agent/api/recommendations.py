@@ -62,6 +62,16 @@ logger = logging.getLogger(__name__)
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 MAX_RUN_SECONDS = 90
 RUN_LEASE_SECONDS = 120
+OUT_OF_SCOPE_ANSWER = (
+    "I can help find movies and answer questions about saved cards' ratings, release years, "
+    "runtime, genres, match reasons, and streaming availability."
+)
+SAVED_CARD_FACT_TERMS = re.compile(
+    r"\b(?:title|rating|rated|score|year|release|released|runtime|length|genre|"
+    r"genres|stream|streaming|watch|available|availability|provider|providers|rent|buy|free|"
+    r"subscription|match|reason|recommended|recommendation)\b",
+    re.IGNORECASE,
+)
 MAX_SEEN_IDS = 200
 MAX_HISTORY_TURNS = 6
 MAX_HISTORY_EVENTS = 24
@@ -499,7 +509,7 @@ async def stream_recommendations(
                 else:
                     patch = await extract_intent_patch(body.message, prior_intent)
                     turn_kind = patch.turn_kind
-                    if turn_kind is not TurnKind.INSPECT_RESULTS:
+                    if turn_kind not in {TurnKind.INSPECT_RESULTS, TurnKind.OUT_OF_SCOPE}:
                         failure_stage = "tmdb_title_lookup"
                         if patch.similar_to_title is not None:
                             yield emit(
@@ -530,16 +540,22 @@ async def stream_recommendations(
                             similar_reference = _saved_similar_reference(prior_state)
                     else:
                         similar_reference = _saved_similar_reference(prior_state)
-                    failure_stage = "intent_merge"
-                    merge_base = MovieIntent() if turn_kind is TurnKind.NEW_SEARCH else prior_intent
-                    merged = merge_intent(merge_base, patch, seen_tmdb_ids=current_seen_ids)
-                    current_intent = merged.intent
-                    excluded_tmdb_ids = (
-                        merged.excluded_tmdb_ids if turn_kind is TurnKind.ANOTHER_SET else ()
-                    )
-                    clarification = (
-                        None if turn_kind is TurnKind.INSPECT_RESULTS else merged.clarification
-                    )
+                    if turn_kind is TurnKind.OUT_OF_SCOPE:
+                        current_intent = prior_intent
+                        clarification = None
+                    else:
+                        failure_stage = "intent_merge"
+                        merge_base = (
+                            MovieIntent() if turn_kind is TurnKind.NEW_SEARCH else prior_intent
+                        )
+                        merged = merge_intent(merge_base, patch, seen_tmdb_ids=current_seen_ids)
+                        current_intent = merged.intent
+                        excluded_tmdb_ids = (
+                            merged.excluded_tmdb_ids if turn_kind is TurnKind.ANOTHER_SET else ()
+                        )
+                        clarification = (
+                            None if turn_kind is TurnKind.INSPECT_RESULTS else merged.clarification
+                        )
 
                 pending = title_clarification
                 if clarification is not None and pending is None:
@@ -571,7 +587,11 @@ async def stream_recommendations(
                 yield emit(
                     TraceStage.DECIDE,
                     TraceEventType.INTENT_UPDATED,
-                    "Saved the explicit filters and kept omitted preferences",
+                    (
+                        "Kept the current movie preferences for an out-of-scope request"
+                        if turn_kind is TurnKind.OUT_OF_SCOPE
+                        else "Saved the explicit filters and kept omitted preferences"
+                    ),
                     metadata={
                         "genre_count": len(current_intent.genres),
                         "people_count": len(current_intent.people),
@@ -583,18 +603,25 @@ async def stream_recommendations(
                 )
 
                 result_data: dict[str, Any]
-                if turn_kind is TurnKind.INSPECT_RESULTS:
-                    _clear_pending_clarification(current_state)
-                    answer = _answer_from_saved_results(
-                        body.message,
-                        prior_state.get("last_result"),
-                        prior_state.get("provider_lookups"),
-                    )
+                if turn_kind in {TurnKind.INSPECT_RESULTS, TurnKind.OUT_OF_SCOPE}:
+                    if turn_kind is TurnKind.INSPECT_RESULTS:
+                        _clear_pending_clarification(current_state)
+                        answer = _answer_from_saved_results(
+                            body.message,
+                            prior_state.get("last_result"),
+                            prior_state.get("provider_lookups"),
+                        )
+                    else:
+                        answer = OUT_OF_SCOPE_ANSWER
                     result_data = {"answer": answer}
                     terminal = emit(
                         TraceStage.COMPLETE,
                         TraceEventType.COMPLETED,
-                        "Answered from this conversation's saved movie cards",
+                        (
+                            "Answered from this conversation's saved movie cards"
+                            if turn_kind is TurnKind.INSPECT_RESULTS
+                            else "Explained the supported movie-assistant scope"
+                        ),
                         data=result_data,
                     )
                     failure_stage = "run_finalization"
@@ -1595,6 +1622,14 @@ def _answer_from_saved_results(
         if (match := re.search(pattern, lower_message)) is not None
     ]
     selected_index = min(ordinal_matches)[1] if ordinal_matches else None
+    title_reference = any(
+        item.movie.title.casefold() in lower_message for item in batch.recommendations
+    )
+    about_reference = (title_reference or selected_index is not None) and re.search(
+        r"\b(?:tell me|more|what) about\b", lower_message
+    ) is not None
+    if SAVED_CARD_FACT_TERMS.search(message) is None and not about_reference:
+        return OUT_OF_SCOPE_ANSWER
     selected = next(
         (item for item in batch.recommendations if item.movie.title.casefold() in lower_message),
         None,

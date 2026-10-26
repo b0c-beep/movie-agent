@@ -134,7 +134,7 @@ The Phase 1 deployment proof passed on October 25, 2026: [frontend](https://movi
 - Anonymous session, conversation, run, and usage records have bounded payload sizes but no automatic retention cleanup. Expired session content may remain in the database until an owner-approved retention process is added; no cleanup schedule is currently configured.
 - Availability is provider-level and country-specific; it may be incomplete or stale.
 - Subjective qualities such as “dark” are interpretations, not objective catalog fields.
-- This is a movie-finding assistant, not an open-domain chat service. Questions about shown movies use saved card facts; with no cards it asks for recommendations first. If the model classifies an unrelated question as a saved-card question, the deterministic fallback may answer with the only saved movie's facts.
+- This is a movie-finding assistant, not an open-domain chat service. Unrelated requests receive a fixed scope reply; saved-card answers use only supported facts stored for those movies. Intent classification still depends on the model, so broad live-model behavior is not established by fixture tests.
 - Rotten Tomatoes enrichment is optional and may be absent for individual titles.
 - Unrated titles will show “Not rated”; missing availability data will be distinguished from a failed lookup.
 
