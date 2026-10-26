@@ -8,6 +8,12 @@ Describe what you want in natural language. The agent can filter by genre, mood,
 
 New searches return four recommendations by default. You can request between one and ten; the agent explains when it cannot find enough verified matches. It streams safe **predict → decide → act** activity and presents movie cards with posters, ratings, match explanations, and regional providers.
 
+## How Suggestions Are Made
+
+1. **Parse:** Groq turns your request into typed filters. Refinements carry forward preferences from the current conversation unless you change them.
+2. **Search:** The backend asks TMDB for candidate movies and their details.
+3. **Verify:** The backend checks factual filters against those details and shows matching movies in TMDB's discovery order. There is no personalized ranking. Mood is subjective; unclear requests get a clarification, and too few matches produce an explained shortfall.
+
 ## Architecture
 
 ```mermaid
