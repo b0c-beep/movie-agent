@@ -67,6 +67,11 @@ export function RecommendationWorkspace() {
   }) {
     const text = options.message.trim();
     if (!text || isRunning) return;
+    const clearPrompt = options.clearPrompt !== false;
+    if (clearPrompt) setMessage("");
+    const restorePrompt = () => {
+      if (clearPrompt) setMessage((current) => current || text);
+    };
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -177,7 +182,10 @@ export function RecommendationWorkspace() {
         },
       );
 
-      if (terminal.event?.type === "failed" || terminal.event?.type === "cancelled") return;
+      if (terminal.event?.type === "failed" || terminal.event?.type === "cancelled") {
+        restorePrompt();
+        return;
+      }
       const nextConversation = {
         id: response.conversationId,
         version: (conversation?.version ?? 1) + 1,
@@ -186,11 +194,16 @@ export function RecommendationWorkspace() {
       const finalStatus =
         terminal.event?.type === "needs_clarification" ? "Needs clarification" : "Complete";
       updateCurrentTurn((turn) => ({ ...turn, status: finalStatus }));
-      if (options.clearPrompt !== false) setMessage("");
     } catch (reason) {
-      if (terminal.event) return;
+      if (terminal.event) {
+        if (terminal.event.type === "failed" || terminal.event.type === "cancelled") {
+          restorePrompt();
+        }
+        return;
+      }
       if (controller.signal.aborted) {
         updateCurrentTurn((turn) => ({ ...turn, status: "Cancelled" }));
+        restorePrompt();
         return;
       }
 
@@ -218,6 +231,7 @@ export function RecommendationWorkspace() {
               const recoveredResult = normalizeResult(recoveredRun.response, currentIntent);
               const recoveredLabel = statusLabel(recoveredRun.status);
               if (recoveredRun.status === "failed") {
+                restorePrompt();
                 const failedEvent = [...recoveredEvents]
                   .reverse()
                   .find((event) => event.type === "failed");
@@ -232,6 +246,7 @@ export function RecommendationWorkspace() {
                   runId,
                 }));
               } else if (recoveredRun.status === "cancelled") {
+                restorePrompt();
                 updateCurrentTurn((turn) => ({
                   ...turn,
                   status: "Cancelled",
@@ -256,6 +271,7 @@ export function RecommendationWorkspace() {
                 };
                 setConversation(nextConversation);
               } else {
+                restorePrompt();
                 const notice = interruptionMessage(true);
                 updateCurrentTurn((turn) => ({
                   ...turn,
@@ -274,6 +290,8 @@ export function RecommendationWorkspace() {
         }
       }
       if (recovered) return;
+
+      restorePrompt();
 
       const rawMessage = reason instanceof Error ? reason.message : "";
       const networkInterruption =
