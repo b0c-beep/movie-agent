@@ -3,6 +3,7 @@ import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RecommendationWorkspace } from "@/components/recommendation-workspace";
+import { normalizeResult } from "@/lib/workspace";
 
 const mocks = vi.hoisted(() => ({
   getConversation: vi.fn(),
@@ -10,6 +11,12 @@ const mocks = vi.hoisted(() => ({
   getRunStatus: vi.fn(),
   streamRecommendations: vi.fn(),
 }));
+
+describe("recommendation defaults", () => {
+  it("uses four results when a normalized response omits its requested count", () => {
+    expect(normalizeResult({ recommendations: [] })?.requested_count).toBe(4);
+  });
+});
 
 vi.mock("@/lib/api", () => ({
   getConversation: mocks.getConversation,
@@ -423,7 +430,9 @@ describe("phase 4 conversation workspace", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
-    expect(await screen.findByRole("heading", { name: "The Matrix" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Show details for The Matrix" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("Complete")).toBeInTheDocument();
     expect(mocks.getRunStatus).toHaveBeenCalledWith("run-1");
     expect(calls).toHaveLength(1);

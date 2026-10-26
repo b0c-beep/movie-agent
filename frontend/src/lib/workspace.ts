@@ -80,7 +80,7 @@ export function normalizeResult(
     intent,
     recommendations: (recommendations ?? []) as RecommendationResult["recommendations"],
     requested_count:
-      typeof value.requested_count === "number" ? value.requested_count : 5,
+      typeof value.requested_count === "number" ? value.requested_count : 4,
     shortfall_reason: stringValue(value.shortfall_reason),
     clarification,
     issues: Array.isArray(value.issues) ? (value.issues as RecommendationResult["issues"]) : [],
