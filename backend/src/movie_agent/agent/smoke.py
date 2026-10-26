@@ -6,7 +6,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
 
-DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
+from movie_agent.agent.model_config import (
+    configured_model,
+    configured_model_api_key_name,
+)
 
 
 class SmokeResult(BaseModel):
@@ -17,7 +20,7 @@ class SmokeResult(BaseModel):
 
 
 def build_smoke_agent(model: Model | str | None = None) -> Agent[object, SmokeResult]:
-    resolved_model = model or f"groq:{os.getenv('GROQ_MODEL', DEFAULT_GROQ_MODEL)}"
+    resolved_model = model or configured_model()
     agent = Agent(
         resolved_model,
         output_type=SmokeResult,
@@ -36,7 +39,8 @@ def build_smoke_agent(model: Model | str | None = None) -> Agent[object, SmokeRe
 
 
 async def run_live_smoke() -> SmokeResult:
-    if not os.getenv("GROQ_API_KEY"):
-        raise RuntimeError("GROQ_API_KEY is required for the opt-in live smoke test")
+    api_key_name = configured_model_api_key_name()
+    if not os.getenv(api_key_name):
+        raise RuntimeError(f"{api_key_name} is required for the opt-in live smoke test")
     result = await build_smoke_agent().run("Pick one comedy from the tool results.")
     return result.output
