@@ -366,29 +366,6 @@ export function ChatExperience({
               <h1>What should we watch tonight?</h1>
               <p>Tell me what you’re in the mood for, or start with one of these examples.</p>
             </div>
-            <div aria-label="Example prompts" className="examplePrompts">
-              <h2>{message.trim() ? "Matching examples" : "Try a prompt"}</h2>
-              {!suggestionsDismissed && matchingPrompts.length ? (
-                <ul id="example-prompts" role="listbox">
-                  {matchingPrompts.map((prompt, index) => (
-                    <li key={prompt}>
-                      <button
-                        aria-selected={activeSuggestion === index}
-                        className="examplePrompt"
-                        id={`example-prompt-${index}`}
-                        onClick={() => fillPrompt(prompt)}
-                        role="option"
-                        type="button"
-                      >
-                        {prompt}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              ) : !suggestionsDismissed ? (
-                <p className="muted">No matching examples. Your message can still be sent.</p>
-              ) : null}
-            </div>
           </div>
         ) : (
           <ol className="chatTurns">
@@ -417,6 +394,36 @@ export function ChatExperience({
         )}
         <div aria-hidden="true" className="chatEnd" />
       </div>
+      <aside aria-label="Chat tools" className="chatSideRail">
+        <ActiveFilters
+          disabled={isRunning}
+          intent={currentIntent}
+          onApplyEdit={onApplyFilterEdit}
+        />
+        <section aria-label="Example prompts" className="examplePrompts">
+          <h2>{message.trim() ? "Matching examples" : "Try a prompt"}</h2>
+          {!suggestionsDismissed && matchingPrompts.length ? (
+            <ul id="example-prompts" role="listbox">
+              {matchingPrompts.map((prompt, index) => (
+                <li key={prompt}>
+                  <button
+                    aria-selected={activeSuggestion === index}
+                    className="examplePrompt"
+                    id={`example-prompt-${index}`}
+                    onClick={() => fillPrompt(prompt)}
+                    role="option"
+                    type="button"
+                  >
+                    {prompt}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : !suggestionsDismissed ? (
+            <p className="muted">No matching examples. Your message can still be sent.</p>
+          ) : null}
+        </section>
+      </aside>
       {!isAtLatest && turns.length ? (
         <button className="jumpToLatest" onClick={jumpToLatest} type="button">
           Jump to latest
@@ -424,12 +431,7 @@ export function ChatExperience({
       ) : null}
 
       <div className="chatComposerArea">
-        <section aria-label="Current filters" className="chatControls">
-          <ActiveFilters
-            disabled={isRunning}
-            intent={currentIntent}
-            onApplyEdit={onApplyFilterEdit}
-          />
+        <section aria-label="Availability settings" className="chatControls">
           <div className="countryPicker chatCountryPicker">
             <label htmlFor="availability-country">Streaming country</label>
             <select
@@ -459,10 +461,10 @@ export function ChatExperience({
           <label className="srOnly" htmlFor="chat-message">Message</label>
           <textarea
             aria-activedescendant={activeSuggestion >= 0 ? `example-prompt-${activeSuggestion}` : undefined}
-            aria-autocomplete={isEmpty && !suggestionsDismissed ? "list" : "none"}
-            aria-controls={isEmpty && !suggestionsDismissed ? "example-prompts" : undefined}
-            aria-expanded={isEmpty && !suggestionsDismissed && matchingPrompts.length > 0}
-            aria-haspopup={isEmpty ? "listbox" : undefined}
+            aria-autocomplete={!suggestionsDismissed ? "list" : "none"}
+            aria-controls={!suggestionsDismissed ? "example-prompts" : undefined}
+            aria-expanded={!suggestionsDismissed && matchingPrompts.length > 0}
+            aria-haspopup="listbox"
             autoComplete="off"
             id="chat-message"
             maxLength={1200}
