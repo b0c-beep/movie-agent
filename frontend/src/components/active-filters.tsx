@@ -51,38 +51,45 @@ export function ActiveFilters({
       ) : (
         <ul className="filterList">
           {filters.map((filter) => (
-            <li className="filterChip" key={filter.id}>
-              <span className="filterText">
-                <span className="filterGroup">{filter.group}:</span> {filter.display}
-              </span>
-              {filter.remove ? (
-                <button
-                  aria-label={`Remove ${filter.group} ${filter.display} filter`}
-                  className="filterButton"
-                  disabled={disabled}
-                  onClick={() => onApplyEdit(filter.remove as FilterEdit)}
-                  type="button"
-                >
-                  Remove
-                </button>
-              ) : null}
-              {filter.editable ? (
-                <button
-                  aria-expanded={editingId === filter.id}
-                  aria-label={`Edit ${filter.group} filter`}
-                  className="filterButton"
-                  disabled={disabled}
-                  onClick={() => startEditing(filter)}
-                  type="button"
-                >
-                  Edit
-                </button>
-              ) : null}
-              {filter.field === "country" ? (
-                <span className="filterNote">Managed above</span>
-              ) : null}
+            <li className="filterItem" key={filter.id}>
+              <div className="filterChip">
+                <span className="filterText">
+                  <span className="filterGroup">{filter.group}:</span> {filter.display}
+                </span>
+                {filter.remove ? (
+                  <button
+                    aria-label={`Remove ${filter.group} ${filter.display} filter`}
+                    className="filterButton"
+                    disabled={disabled}
+                    onClick={() => onApplyEdit(filter.remove as FilterEdit)}
+                    type="button"
+                  >
+                    Remove
+                  </button>
+                ) : null}
+                {filter.editable ? (
+                  <button
+                    aria-controls={editingId === filter.id ? `filter-form-${inputId(filter)}` : undefined}
+                    aria-expanded={editingId === filter.id}
+                    aria-label={`Edit ${filter.group} filter`}
+                    className="filterButton"
+                    disabled={disabled}
+                    onClick={() => startEditing(filter)}
+                    type="button"
+                  >
+                    Edit
+                  </button>
+                ) : null}
+                {filter.field === "country" ? (
+                  <span className="filterNote">Use country selector</span>
+                ) : null}
+              </div>
               {editingId === filter.id ? (
-                <form className="filterEditForm" onSubmit={(event) => submitEdit(event, filter)}>
+                <form
+                  className="filterEditForm"
+                  id={`filter-form-${inputId(filter)}`}
+                  onSubmit={(event) => submitEdit(event, filter)}
+                >
                   <label htmlFor={inputId(filter)}>New {filter.group.toLowerCase()}</label>
                   <input
                     autoComplete="off"
