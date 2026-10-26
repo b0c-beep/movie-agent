@@ -153,12 +153,13 @@ function AgentResponse({
                       <li key={filter}>
                         <span>{filter}</span>
                         <button
+                          aria-label={`Remove filter: ${filter}`}
                           className="filterButton"
                           disabled={disabled}
                           onClick={() => onRelaxFilter(filter)}
                           type="button"
                         >
-                          Relax
+                          Remove
                         </button>
                       </li>
                     ))}
@@ -348,6 +349,31 @@ export function ChatExperience({
           </button>
         ) : null}
       </header>
+      <aside aria-label="Availability settings" className="availabilityRail">
+        <div className="countryPicker chatCountryPicker">
+          <label htmlFor="availability-country">Streaming country</label>
+          <select
+            aria-disabled={isRefreshingAvailability || isRunning}
+            disabled={isRunning || isRefreshingAvailability}
+            id="availability-country"
+            onChange={(event) => void handleCountryChange(event)}
+            value={selectedCountry}
+          >
+            {COUNTRY_OPTIONS.map(([code, label]) => (
+              <option key={code} value={code}>
+                {label} ({code})
+              </option>
+            ))}
+          </select>
+          <span aria-live="polite" className="countryStatus">
+            {isRecovering
+              ? "Checking the saved run…"
+              : isRefreshingAvailability
+                ? "Refreshing providers…"
+                : `Provider availability in ${countryName(selectedCountry)}.`}
+          </span>
+        </div>
+      </aside>
 
       <div
         aria-label="Conversation"
@@ -431,32 +457,6 @@ export function ChatExperience({
       ) : null}
 
       <div className="chatComposerArea">
-        <section aria-label="Availability settings" className="chatControls">
-          <div className="countryPicker chatCountryPicker">
-            <label htmlFor="availability-country">Streaming country</label>
-            <select
-              aria-disabled={isRefreshingAvailability || isRunning}
-              disabled={isRunning || isRefreshingAvailability}
-              id="availability-country"
-              onChange={(event) => void handleCountryChange(event)}
-              value={selectedCountry}
-            >
-              {COUNTRY_OPTIONS.map(([code, label]) => (
-                <option key={code} value={code}>
-                  {label} ({code})
-                </option>
-              ))}
-            </select>
-            <span aria-live="polite" className="countryStatus">
-              {isRecovering
-                ? "Checking the saved run…"
-                : isRefreshingAvailability
-                  ? "Refreshing providers…"
-                  : `Provider availability in ${countryName(selectedCountry)}.`}
-            </span>
-          </div>
-        </section>
-
         <form className="chatComposer" onSubmit={sendMessage}>
           <label className="srOnly" htmlFor="chat-message">Message</label>
           <textarea
