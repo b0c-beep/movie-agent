@@ -2,18 +2,11 @@
 
 Movie Agent helps answer the deceptively difficult question: **what should I watch tonight?** It turns conversational requests such as “give me three 1990s dark romances” or “an action movie with Sylvester Stallone” into grounded, country-aware recommendations.
 
-> Status: Phase 4.5 is merged and deployed. Both Vercel production deployments are READY at `0fa8893`; `make check` (130 backend and 14 frontend tests), all 12 Playwright scenarios, and the frontend production build passed before merge. Phase 4 recommendation behavior remains under evaluation: a paced live retry found four genre checks needing review, while focused reruns passed after the prompt correction. Phase 5 release checks can now proceed.
-
 ## Product Experience
 
-- Understand genre, mood, era, cast, runtime, language, rating, and result-count preferences.
-- Preserve context across follow-ups such as “make them newer” or “give me another three.”
-- Stream a safe, visible **predict → decide → act** trace while the agent works.
-- Return responsive movie cards with posters, match explanations, ratings, and external links.
-- Show country-specific streaming providers and their logos.
-- Protect the demo behind a shared passcode to control API usage. A valid HttpOnly signed session cookie keeps the app unlocked across tabs and refreshes without storing the PIN; each full page load starts a blank conversation.
+Describe what you want in natural language. The agent can filter by genre, mood, release year or range, cast or crew, original language, maximum runtime, minimum TMDB rating, and similarity to a named movie. There is no fixed limit on how many of these filter types you can combine in one request; follow-up messages can refine them. Availability country controls where to check streaming options. Moods such as “dark” are treated as subjective preferences; factual filters are checked against movie data.
 
-New searches default to four recommendations and can request a different count, capped at ten. If too few verified matches exist, the app will explain the shortfall. Follow-ups can refine preferences, request another set, or ask about a displayed movie.
+New searches return four recommendations by default. You can request between one and ten; the agent explains when it cannot find enough verified matches. It streams safe **predict → decide → act** activity and presents movie cards with posters, ratings, match explanations, and regional providers.
 
 ## Planned Architecture
 
