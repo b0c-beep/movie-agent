@@ -31,6 +31,7 @@ from movie_agent.models.intent import (
 )
 from movie_agent.models.movies import (
     Alternative,
+    CastMember,
     MovieDetails,
     Rating,
     RatingSource,
@@ -1524,7 +1525,7 @@ def _build_recommendation(
 
     return Recommendation(
         rank=rank,
-        movie=_movie_details(details, watch_options),
+        movie=_movie_details(details, watch_options, intent),
         match_reason=(
             f"TMDB's similar-titles results for {similar_to_title} included this movie. "
             f"{_match_reason(details, intent)}"
@@ -1539,13 +1540,30 @@ def _build_recommendation(
 def _movie_details(
     details: TmdbMovieDetails,
     watch_options: WatchOptions | None,
+    intent: MovieIntent,
 ) -> MovieDetails:
+    requested_cast = [
+        member
+        for member in details.cast
+        if any(
+            (person.role is None or _collection_key(person.role) in {"actor", "cast"})
+            and (
+                member.tmdb_id == person.tmdb_id
+                if person.tmdb_id is not None
+                else _collection_key(member.name) == _collection_key(person.name)
+            )
+            for person in intent.people
+        )
+    ]
+    cast = {member.tmdb_id: member for member in [*requested_cast, *details.cast]}
+    cast_members = list(cast.values())[:10]
     return MovieDetails(
         tmdb_id=details.tmdb_id,
         title=details.title,
         release_year=details.release_year,
         runtime_minutes=details.runtime_minutes,
         genres=list(details.genres),
+        cast=[CastMember(tmdb_id=member.tmdb_id, name=member.name) for member in cast_members],
         overview=_truncate(details.overview.strip(), MAX_OVERVIEW_CHARS),
         poster_url=_image_url(details.poster_path),
         tmdb_url=HttpUrl(f"{TMDB_WEB_BASE}/{details.tmdb_id}"),
