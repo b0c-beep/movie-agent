@@ -1,19 +1,17 @@
 from __future__ import annotations
 
-import os
-
 from pydantic_ai import Agent, NativeOutput, UsageLimits
 from pydantic_ai.models import Model
 
+from movie_agent.agent.model_config import configured_model
 from movie_agent.models.intent import MovieIntent, MovieIntentPatch
 
-DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 MAX_MESSAGE_CHARS = 1200
 INTENT_OUTPUT_TOKEN_LIMIT = 4500
 
 
 def build_intent_agent(model: Model | str | None = None) -> Agent[None, MovieIntentPatch]:
-    resolved_model = model or f"groq:{os.getenv('GROQ_MODEL', DEFAULT_GROQ_MODEL)}"
+    resolved_model = model or configured_model()
     output_type = (
         NativeOutput(MovieIntentPatch, strict=False)
         if isinstance(resolved_model, str) and resolved_model.startswith("groq:")
@@ -21,9 +19,7 @@ def build_intent_agent(model: Model | str | None = None) -> Agent[None, MovieInt
     )
     return Agent(
         resolved_model,
-        # This schema intentionally has optional fields and defaulted collection
-        # operations. Groq strict mode rejects that shape; Pydantic still validates
-        # the decoded patch locally when best-effort structured output is used.
+        # Groq rejects strict mode for this schema's optional/defaulted fields.
         output_type=output_type,
         system_prompt=(
             "Extract a small typed patch from the user's latest movie request. "

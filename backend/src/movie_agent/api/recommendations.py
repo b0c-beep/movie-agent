@@ -5,7 +5,6 @@ import contextlib
 import json
 import logging
 import math
-import os
 import re
 from collections.abc import AsyncIterator, Sequence
 from typing import Annotated, Any, Literal
@@ -17,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pydantic_ai.exceptions import ModelRateLimitError
 
 from movie_agent.agent.intent import extract_intent_patch
+from movie_agent.agent.model_config import configured_model_name
 from movie_agent.agent.recommendations import (
     AssemblyIssue,
     ProviderLookup,
@@ -921,7 +921,7 @@ async def _finalize(
         result=result,
         trace=trace,
         error_code=error_code,
-        model=os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"),
+        model=configured_model_name(),
     )
 
 

@@ -365,7 +365,7 @@ async def test_protected_stream_assembles_and_persists_grounded_result(
     )
     monkeypatch.setattr(app.state, "tmdb", TmdbClient(tmdb_http, "tmdb-test"), raising=False)
     monkeypatch.setenv("SESSION_SIGNING_KEY", SIGNING_KEY)
-    monkeypatch.setenv("GROQ_MODEL", "openai/gpt-oss-20b")
+    monkeypatch.setenv("MODEL_NAME", "openai/gpt-oss-20b")
 
     async def extract_patch(message: str, prior: object) -> MovieIntentPatch:
         assert message == "One science fiction movie"

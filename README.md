@@ -10,7 +10,7 @@ New searches return four recommendations by default. You can request between one
 
 ## How Suggestions Are Made
 
-1. **Parse:** Groq turns your request into typed filters. Refinements carry forward preferences from the current conversation unless you change them.
+1. **Parse:** Pydantic AI sends your request to GPT-OSS 20B through OpenRouter and turns it into typed filters. Refinements carry forward preferences from the current conversation unless you change them.
 2. **Search:** The backend asks TMDB for candidate movies and their details.
 3. **Verify:** The backend checks factual filters against those details and shows matching movies in TMDB's discovery order. There is no personalized ranking. Mood is subjective; unclear requests get a clarification, and too few matches produce an explained shortfall.
 
@@ -23,7 +23,7 @@ flowchart LR
     direction TB
     web[Next.js frontend]
     api[FastAPI backend]
-    model[Pydantic AI + Groq]
+    model[Pydantic AI + OpenRouter]
     web <-->|Requests · streamed events| api
     api <-->|Typed filters| model
   end
@@ -53,7 +53,7 @@ flowchart LR
 
 - **Web app · Next.js** — conversation, filters, movie cards, and streamed updates.
 - **API · FastAPI** — session checks, recommendation flow, and movie-fact verification.
-- **Inference · Pydantic AI + Groq** — converts messages into typed preference updates.
+- **Inference · Pydantic AI + OpenRouter** — routes GPT-OSS 20B and converts messages into typed preference updates.
 - **Connected services** — TMDB for movie data, OMDb for optional ratings, and Supabase for session and conversation state.
 
 ## Data Sources

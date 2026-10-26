@@ -600,7 +600,7 @@ async def test_phase4_filter_edit_stream_skips_model_and_persists_history(
     )
     monkeypatch.setattr(app.state, "tmdb", TmdbClient(tmdb_http, "tmdb-test"), raising=False)
     monkeypatch.setenv("SESSION_SIGNING_KEY", SIGNING_KEY)
-    monkeypatch.setenv("GROQ_MODEL", "openai/gpt-oss-20b")
+    monkeypatch.setenv("MODEL_NAME", "openai/gpt-oss-20b")
     monkeypatch.setattr(recommendations_api, "extract_intent_patch", unexpected_model_call)
 
     try:
