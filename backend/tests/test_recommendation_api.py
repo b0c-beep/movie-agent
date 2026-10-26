@@ -837,7 +837,7 @@ async def test_clarification_result_uses_the_complete_result_shape(
             part for part in response.text.split("\n\n") if "event: needs_clarification" in part
         )
         event = json.loads(frame.split("data: ", 1)[1])
-        assert event["data"]["requested_count"] == 5
+        assert event["data"]["requested_count"] == 4
         assert event["data"]["clarification"] == "Which decade do you prefer?"
         assert event["data"]["issues"] == []
         assert event["data"]["provider_lookups"] == []

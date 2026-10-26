@@ -52,7 +52,7 @@ class MovieIntent(BaseModel):
     runtime_max_minutes: int | None = Field(default=None, ge=1, le=600)
     tmdb_rating_min: float | None = Field(default=None, ge=0, le=10)
     country: str = Field(default="RO", pattern=r"^[A-Z]{2}$")
-    requested_count: int = Field(default=5, ge=1, le=10)
+    requested_count: int = Field(default=4, ge=1, le=10)
 
     @model_validator(mode="after")
     def years_are_ordered(self) -> MovieIntent:

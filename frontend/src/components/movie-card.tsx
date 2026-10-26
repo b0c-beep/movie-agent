@@ -1,5 +1,6 @@
 "use client";
 
+import { useId, useRef } from "react";
 import type { RecommendationCard, RecommendationResult } from "@/lib/api";
 
 type ProviderLookup = RecommendationResult["provider_lookups"][number];
@@ -29,6 +30,8 @@ export function MovieCard({
   isAlternative?: boolean;
 }) {
   const movie = recommendation.movie;
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
   const ratings = movie.ratings ?? [];
   const tmdbRating = ratings.find((item) => item.source === "tmdb");
   const externalRatings = ratings.filter(
@@ -50,90 +53,113 @@ export function MovieCard({
 
   return (
     <article className="movieCard" data-alternative={isAlternative ? "true" : undefined}>
-      <a className="poster" href={movie.tmdb_url} rel="noreferrer" target="_blank">
-        {movie.poster_url ? (
-          <span
-            aria-label={`${movie.title} poster`}
-            className="posterImage"
-            role="img"
-            style={{ backgroundImage: `url("${movie.poster_url}")` }}
-          />
-        ) : (
-          <span className="posterFallback">Poster unavailable</span>
-        )}
-      </a>
-      <div className="movieInfo">
-        {isAlternative ? <p className="alternativeBadge">Closest alternative</p> : null}
-        <p className="movieMeta">
-          {movie.release_year ?? "Year unknown"}
-          {movie.runtime_minutes ? ` · ${movie.runtime_minutes} min` : ""}
-        </p>
-        <h3>
-          <a href={movie.tmdb_url} rel="noreferrer" target="_blank">
-            {movie.title}
-          </a>
-        </h3>
-        <p className="movieGenres">
-          {genres.length ? genres.join(" · ") : "Genres not listed."}
-        </p>
-        <div className="movieRatings">
-          <p className="movieRating">
+      <button
+        aria-label={`Show details for ${movie.title}`}
+        aria-haspopup="dialog"
+        className="movieSummary"
+        onClick={() => dialogRef.current?.showModal()}
+        type="button"
+      >
+        <span className="movieSummaryPoster">
+          {movie.poster_url ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              alt={`${movie.title} poster`}
+              className="posterImage"
+              height={750}
+              loading="lazy"
+              src={movie.poster_url}
+              width={500}
+            />
+          ) : (
+            <span className="posterFallback">Poster unavailable</span>
+          )}
+        </span>
+        <span className="movieSummaryInfo">
+          {isAlternative ? <span className="alternativeBadge">Closest alternative</span> : null}
+          <span className="movieSummaryTitle">{movie.title}</span>
+          <span className="movieSummaryRating">
             TMDB ·{" "}
             {tmdbRating?.value == null
               ? "Not rated"
               : ratingValue(tmdbRating.value, tmdbRating.scale)}
-            {tmdbRating?.vote_count
-              ? ` · ${tmdbRating.vote_count.toLocaleString()} votes`
-              : ""}
+          </span>
+        </span>
+      </button>
+      <dialog aria-labelledby={titleId} className="movieDialog" ref={dialogRef}>
+        <div className="movieDialogHeader">
+          <h2 id={titleId}>{movie.title}</h2>
+          <button className="dialogClose" onClick={() => dialogRef.current?.close()} type="button">
+            Close
+          </button>
+        </div>
+        <div className="movieInfo">
+          <p className="movieMeta">
+            {movie.release_year ?? "Year unknown"}
+            {movie.runtime_minutes ? ` · ${movie.runtime_minutes} min` : ""}
           </p>
-          {externalRatings.map((rating) => (
-            <p className="externalRating" key={rating.source}>
-              {ratingLabel(rating.source)} · {ratingValue(rating.value as number, rating.scale)}
-              {rating.vote_count ? ` · ${rating.vote_count.toLocaleString()} votes` : ""}
+          <p className="movieGenres">
+            {genres.length ? genres.join(" · ") : "Genres not listed."}
+          </p>
+          <div className="movieRatings">
+            <p className="movieRating">
+              TMDB ·{" "}
+              {tmdbRating?.value == null
+                ? "Not rated"
+                : ratingValue(tmdbRating.value, tmdbRating.scale)}
+              {tmdbRating?.vote_count
+                ? ` · ${tmdbRating.vote_count.toLocaleString()} votes`
+                : ""}
+            </p>
+            {externalRatings.map((rating) => (
+              <p className="externalRating" key={rating.source}>
+                {ratingLabel(rating.source)} · {ratingValue(rating.value as number, rating.scale)}
+                {rating.vote_count ? ` · ${rating.vote_count.toLocaleString()} votes` : ""}
+              </p>
+            ))}
+          </div>
+          <p className="movieOverview">{movie.overview || "No overview available."}</p>
+          <p className="matchReason">{recommendation.match_reason}</p>
+          <p className="movieLinks">
+            <a href={movie.tmdb_url} rel="noreferrer" target="_blank">
+              TMDB page
+            </a>
+            {movie.imdb_url ? (
+              <a href={movie.imdb_url} rel="noreferrer" target="_blank">
+                IMDb page
+              </a>
+            ) : null}
+          </p>
+          <ProviderAvailability lookup={providerLookup} />
+          {providerGroups.map(([label, providers]) =>
+            providers.length ? (
+              <p className="providers" key={label}>
+                <strong>{label}:</strong>
+                {providers.map((provider) => (
+                  <span className="providerBadge" key={provider.provider_id}>
+                    {provider.logo_path ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        alt=""
+                        height={24}
+                        loading="lazy"
+                        src={`https://image.tmdb.org/t/p/w92${provider.logo_path}`}
+                        width={24}
+                      />
+                    ) : null}
+                    {provider.name}
+                  </span>
+                ))}
+              </p>
+            ) : null,
+          )}
+          {caveats.map((caveat) => (
+            <p className="caveat" key={caveat}>
+              {caveat}
             </p>
           ))}
         </div>
-        <p className="movieOverview">{movie.overview || "No overview available."}</p>
-        <p className="matchReason">{recommendation.match_reason}</p>
-        <p className="movieLinks">
-          <a href={movie.tmdb_url} rel="noreferrer" target="_blank">
-            TMDB page
-          </a>
-          {movie.imdb_url ? (
-            <a href={movie.imdb_url} rel="noreferrer" target="_blank">
-              IMDb page
-            </a>
-          ) : null}
-        </p>
-        <ProviderAvailability lookup={providerLookup} />
-        {providerGroups.map(([label, providers]) =>
-          providers.length ? (
-            <p className="providers" key={label}>
-              <strong>{label}:</strong>
-              {providers.map((provider) => (
-                <span className="providerBadge" key={provider.provider_id}>
-                  {provider.logo_path ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      alt=""
-                      height={24}
-                      loading="lazy"
-                      src={`https://image.tmdb.org/t/p/w92${provider.logo_path}`}
-                      width={24}
-                    />
-                  ) : null}
-                  {provider.name}
-                </span>
-              ))}
-            </p>
-          ) : null,
-        )}
-        {caveats.map((caveat) => (
-          <p className="caveat" key={caveat}>
-            {caveat}
-          </p>
-        ))}
-      </div>
+      </dialog>
     </article>
   );
 }

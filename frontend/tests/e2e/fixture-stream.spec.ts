@@ -2,7 +2,16 @@ import { expect, test } from "@playwright/test";
 
 test("unlocks the app and displays streamed grounded recommendations", async ({ page }) => {
   let streamCalls = 0;
+  let posterRequests = 0;
   const availabilityRequests: { country: string; expected_version: number }[] = [];
+  await page.route("https://image.tmdb.org/t/p/w500/**", async (route) => {
+    posterRequests += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="500" height="750"><rect width="500" height="750" fill="#93a284"/></svg>',
+    });
+  });
   await page.route("**/api/auth/session", (route) =>
     route.fulfill({ status: 401, contentType: "application/json", body: '{"detail":"locked"}' }),
   );
@@ -29,7 +38,7 @@ test("unlocks the app and displays streamed grounded recommendations", async ({ 
       runtime_minutes: 136,
       genres: ["Science Fiction"],
       overview: "A hacker discovers a simulated world.",
-      poster_url: null,
+      poster_url: "https://image.tmdb.org/t/p/w500/f89U3ADr1oiB1s9GkdPOEpXUk5H.jpg",
       tmdb_url: "https://www.themoviedb.org/movie/603",
       imdb_url: null,
       ratings: [{ source: "tmdb", value: 8.2, scale: "10", vote_count: 100 }],
@@ -134,13 +143,39 @@ test("unlocks the app and displays streamed grounded recommendations", async ({ 
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect(page.locator(".turnStatus").last()).toHaveText("Complete");
-  await expect(page.getByRole("heading", { name: "The Matrix" })).toBeVisible();
-  await expect(page.locator(".movieRating")).toContainText("8.2 / 10");
-  await expect(page.locator(".providerBadge img")).toHaveAttribute(
+  const movieCard = page.getByRole("button", { name: "Show details for The Matrix" });
+  await expect(movieCard).toBeVisible();
+  const sideRail = page.getByLabel("Chat tools");
+  const transcriptBox = await page.getByLabel("Conversation").boundingBox();
+  const sideRailBox = await sideRail.boundingBox();
+  expect(sideRailBox!.x).toBeGreaterThan(transcriptBox!.x + transcriptBox!.width - 1);
+  await expect(sideRail).toContainText("Results requested: 1");
+  await expect(sideRail.locator(".examplePrompt")).toHaveCount(10);
+  expect(await page.locator("html").evaluate((node) => getComputedStyle(node).colorScheme)).toBe("dark");
+  const poster = page.getByRole("img", { name: "The Matrix poster" });
+  await expect(poster).toBeVisible();
+  expect((await poster.boundingBox())?.height).toBeGreaterThan(0);
+  await expect.poll(() => posterRequests).toBe(1);
+  await expect(poster).toHaveJSProperty("naturalWidth", 500);
+  await movieCard.click();
+  const movieDialog = page.getByRole("dialog", { name: "The Matrix" });
+  await expect(movieDialog).toBeVisible();
+  await expect(movieDialog.locator(".movieRating")).toContainText("8.2 / 10");
+  await expect(movieDialog).toContainText("A hacker discovers a simulated world.");
+  await expect(movieDialog.getByRole("link", { name: "TMDB page" })).toHaveAttribute(
+    "href",
+    "https://www.themoviedb.org/movie/603",
+  );
+  await page.keyboard.press("Escape");
+  await expect(movieDialog).not.toBeVisible();
+  await expect(movieCard).toBeFocused();
+  await movieCard.click();
+  await expect(movieDialog.locator(".providerBadge img")).toHaveAttribute(
     "src",
     "https://image.tmdb.org/t/p/w92/netflix.jpg",
   );
   await expect(page.locator(".activityMessage")).toHaveCount(1);
+  await movieDialog.getByRole("button", { name: "Close" }).click();
   const availabilityCountry = page.getByLabel("Streaming country");
   await availabilityCountry.focus();
   await availabilityCountry.selectOption("US");
