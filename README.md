@@ -53,6 +53,10 @@ Detailed planning and agent working memory remain local to the development works
 
 ## Development
 
+### Contributor commits
+
+Every pull request must contain at least two focused commits. Each commit may change only one or two files for one concern; split broader work into targeted commits and bundle them in the pull request. Inspect the staged file list before committing, and do not add empty commits just to meet the count.
+
 ### Conversation chat and usage
 
 The chat keeps the current conversation in page memory. Every full page load starts blank; a valid signed HttpOnly cookie keeps access unlocked, and an expired or missing cookie shows the passcode form. Reloading during a run does not replay or resubmit it. A visual reset does not delete conversation or run records already stored by the backend.
