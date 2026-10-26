@@ -116,6 +116,48 @@ def test_phase4_filter_edits_are_deterministic_and_validate_values() -> None:
         recommendations_api._build_deterministic_turn(invalid, prior, {})
 
 
+def test_confirmed_conflicting_year_bound_replaces_the_prior_range() -> None:
+    prior = MovieIntent(
+        genres=["Romance"],
+        moods=["Dark"],
+        release_year_min=1990,
+        release_year_max=1999,
+        requested_count=3,
+    )
+    patch = recommendations_api.MovieIntentPatch(
+        turn_kind="refine",
+        release_year_min=2016,
+        clarification="Do you want movies released after 2015 instead of 1990-1999?",
+    )
+
+    proposed = recommendations_api._proposed_year_replacement(prior, patch)
+    assert proposed is not None
+    assert proposed.genres == ["Romance"]
+    assert proposed.moods == ["Dark"]
+    assert proposed.release_year_min == 2016
+    assert proposed.release_year_max is None
+    assert proposed.requested_count == 3
+
+    state: dict[str, object] = {}
+    recommendations_api._set_pending_clarification(
+        state,
+        recommendations_api.PendingClarification(
+            text=patch.clarification,
+            proposed_intent=proposed,
+        ),
+    )
+    confirmation = recommendations_api.RecommendationRunRequest(
+        message="yes",
+        client_request_id="year-confirm",
+        conversation_id=uuid4(),
+        expected_version=2,
+    )
+
+    confirmed, _ = recommendations_api._build_deterministic_turn(confirmation, prior, state)
+
+    assert confirmed == proposed
+
+
 def test_phase4_filter_edit_uses_mood_field_and_rejects_unknown_genre() -> None:
     body = recommendations_api.RecommendationRunRequest(
         message="Make it suspenseful",
