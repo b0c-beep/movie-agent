@@ -13,7 +13,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from pydantic_ai.exceptions import ModelRateLimitError
+from pydantic_ai.exceptions import ModelRateLimitError, UsageLimitExceeded
 
 from movie_agent.agent.intent import extract_intent_patch
 from movie_agent.agent.model_config import configured_model_name
@@ -1786,6 +1786,8 @@ def _answer_from_saved_results(
 def _failure_code(error: Exception) -> str:
     if isinstance(error, ModelRateLimitError):
         return "model_rate_limited"
+    if isinstance(error, UsageLimitExceeded):
+        return "model_usage_limited"
     if isinstance(error, TimeoutError):
         return "run_timeout"
     if isinstance(error, TmdbError):
@@ -1806,6 +1808,15 @@ def _failure_metadata(
         retry_after = _retry_after_seconds(error)
         if retry_after is not None:
             metadata["retry_after_seconds"] = retry_after
+    elif code == "model_usage_limited":
+        message = str(error)
+        metadata["usage_limit"] = (
+            "request"
+            if "request_limit" in message
+            else "output_tokens"
+            if "output_tokens_limit" in message
+            else "other"
+        )
     return metadata
 
 

@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from pydantic_ai.exceptions import UsageLimitExceeded
 
 import movie_agent.api.recommendations as recommendations_api
 from movie_agent.api.recommendations import MAX_RUN_SECONDS, RUN_LEASE_SECONDS
@@ -80,6 +81,29 @@ def test_run_failure_metadata_identifies_stage_without_provider_details() -> Non
         "exception_type": "RuntimeError",
     }
     assert secret_text not in str(metadata)
+
+
+@pytest.mark.parametrize(
+    ("message", "limit"),
+    [
+        ("The next request would exceed request_limit of 6", "request"),
+        ("Exceeded output_tokens_limit of 10000", "output_tokens"),
+    ],
+)
+def test_model_usage_limit_metadata_names_only_the_limit_kind(message: str, limit: str) -> None:
+    error = UsageLimitExceeded(message)
+
+    code = recommendations_api._failure_code(error)
+    metadata = recommendations_api._failure_metadata("intent_extraction", error, code)
+
+    assert code == "model_usage_limited"
+    assert metadata == {
+        "error_code": "model_usage_limited",
+        "failure_stage": "intent_extraction",
+        "exception_type": "UsageLimitExceeded",
+        "usage_limit": limit,
+    }
+    assert message not in str(metadata)
 
 
 def test_recommendation_request_rejects_whitespace_only_message() -> None:

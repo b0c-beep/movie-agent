@@ -74,8 +74,8 @@ describe("RecommendationWorkspace terminal events", () => {
     render(createElement(RecommendationWorkspace));
     await submitPrompt("three comedies");
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("couldn’t interpret that request");
-    expect(screen.getByRole("alert")).toHaveTextContent("couldn’t interpret that request");
+    expect(await screen.findByRole("alert")).toHaveTextContent("couldn’t complete the interpretation");
+    expect(screen.getByRole("alert")).toHaveTextContent("start a new chat");
     expect(window.sessionStorage.getItem("movie-agent-conversation")).toBeNull();
     expect(mocks.streamRecommendations).toHaveBeenCalledWith(
       expect.objectContaining({ conversationId: null, expectedVersion: null }),
@@ -83,6 +83,33 @@ describe("RecommendationWorkspace terminal events", () => {
       expect.any(AbortSignal),
       expect.any(Function),
     );
+  });
+
+  it.each([
+    ["request", "this turn’s model request limit"],
+    ["output_tokens", "this turn’s response-length limit"],
+  ])("explains when intent extraction hits the %s limit", async (usageLimit, expectedMessage) => {
+    mocks.streamRecommendations.mockImplementation(
+      async (_input: unknown, onEvent: (event: unknown) => void) => {
+        onEvent(
+          traceEvent("failed", {
+            metadata: {
+              error_code: "model_usage_limited",
+              failure_stage: "intent_extraction",
+              exception_type: "UsageLimitExceeded",
+              usage_limit: usageLimit,
+            },
+          }),
+        );
+        return { conversationId: "conv-1", runId: "run-1" };
+      },
+    );
+
+    render(createElement(RecommendationWorkspace));
+    await submitPrompt("three comedies");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(expectedMessage);
+    expect(screen.getByRole("alert")).toHaveTextContent("saved filters were not changed");
   });
 
   it("still advances the conversation when the run completes", async () => {

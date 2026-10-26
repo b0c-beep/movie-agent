@@ -14,6 +14,8 @@ New searches return four recommendations by default. You can request between one
 2. **Search:** The backend asks TMDB for candidate movies and their details.
 3. **Verify:** The backend checks factual filters against those details and shows matching movies in TMDB's discovery order. There is no personalized ranking. Mood is subjective; unclear requests get a clarification, and too few matches produce an explained shortfall.
 
+Intent extraction can use up to six model requests and 10,000 output tokens per turn. If either limit is reached, the agent explains which one and says the saved filters were not changed.
+
 ## Architecture
 
 ```mermaid
