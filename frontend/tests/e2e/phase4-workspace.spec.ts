@@ -157,8 +157,12 @@ test("starts blank on page load without restoring a saved conversation", async (
   await expect(page.getByLabel("Message")).toBeFocused();
   await page.getByLabel("Message").press("Escape");
   await expect(page.locator(".examplePrompts ul")).toHaveCount(0);
+  await expect(page.getByLabel("Chat tools")).toBeVisible();
   expect(conversationReads).toBe(0);
   await page.setViewportSize({ width: 320, height: 760 });
+  const countryBox = await page.getByLabel("Streaming country").boundingBox();
+  expect(countryBox!.x).toBeGreaterThanOrEqual(0);
+  expect(countryBox!.x + countryBox!.width).toBeLessThanOrEqual(320);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
 });
 
@@ -305,7 +309,9 @@ test("sends structured clarification choices and filter edits when the backend s
   expect(requests[1].clarification_choice_id).toBe("person-1");
   expect(String(requests[1].message)).toContain("I meant Jim Carrey");
 
-  await expect(page.getByRole("heading", { name: "The Truman Show" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Show details for The Truman Show" }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Remove Genre Comedy filter" }).click();
   await expect.poll(() => requests.length).toBe(3);
   expect(requests[2].filter_edit).toEqual({
@@ -362,7 +368,9 @@ test("falls back to descriptive messages when the current backend lacks Phase 4 
   expect(requests[1]).not.toHaveProperty("clarification_choice_id");
   expect(String(requests[1].message)).toContain("I meant Jim Carrey");
 
-  await expect(page.getByRole("heading", { name: "The Truman Show" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Show details for The Truman Show" }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Remove Genre Comedy filter" }).click();
   await expect.poll(() => requests.length).toBe(3);
   expect(requests[2]).not.toHaveProperty("filter_edit");
