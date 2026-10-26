@@ -29,7 +29,7 @@ test("unlocks the app and displays streamed grounded recommendations", async ({ 
   const recommendation = {
     rank: 1,
     match_reason: "TMDB lists this as science fiction.",
-    matched_constraints: ["genre:Science Fiction"],
+    matched_constraints: ["genre:Science Fiction", "person:Keanu Reeves (Actor)"],
     caveats: [],
     movie: {
       tmdb_id: 603,
@@ -37,6 +37,11 @@ test("unlocks the app and displays streamed grounded recommendations", async ({ 
       release_year: 1999,
       runtime_minutes: 136,
       genres: ["Science Fiction"],
+      cast: [
+        { tmdb_id: 6384, name: "Keanu Reeves" },
+        { tmdb_id: 6385, name: "Laurence Fishburne" },
+        { tmdb_id: 6386, name: "Carrie-Anne Moss" },
+      ],
       overview: "A hacker discovers a simulated world.",
       poster_url: "https://image.tmdb.org/t/p/w500/f89U3ADr1oiB1s9GkdPOEpXUk5H.jpg",
       tmdb_url: "https://www.themoviedb.org/movie/603",
@@ -139,7 +144,7 @@ test("unlocks the app and displays streamed grounded recommendations", async ({ 
   await page.goto("/");
   await page.getByLabel("Passcode").fill("fixture-passcode");
   await page.getByRole("button", { name: "Enter" }).click();
-  await page.getByLabel("Message").fill("One science fiction movie");
+  await page.getByLabel("Message").fill("One science fiction movie with Keanu Reeves");
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect(page.locator(".turnStatus").last()).toHaveText("Complete");
@@ -162,6 +167,9 @@ test("unlocks the app and displays streamed grounded recommendations", async ({ 
   await expect(movieDialog).toBeVisible();
   await expect(movieDialog.locator(".movieRating")).toContainText("8.2 / 10");
   await expect(movieDialog).toContainText("A hacker discovers a simulated world.");
+  await expect(movieDialog.locator(".movieCast")).toContainText("Keanu Reeves");
+  await expect(movieDialog.locator(".requestedActor")).toHaveText("Requested");
+  await expect(movieDialog.locator(".movieCast")).toContainText("Laurence Fishburne");
   await expect(movieDialog.getByRole("link", { name: "TMDB page" })).toHaveAttribute(
     "href",
     "https://www.themoviedb.org/movie/603",
@@ -186,6 +194,10 @@ test("unlocks the app and displays streamed grounded recommendations", async ({ 
   );
   expect(availabilityRequests).toEqual([{ country: "US", expected_version: 2 }]);
   expect(streamCalls).toBe(1);
+  await page.getByRole("button", { name: "New chat" }).click();
+  await expect(page.getByRole("heading", { name: "What should we watch tonight?" })).toBeVisible();
+  await expect(page.getByLabel("Streaming country")).toHaveValue("RO");
+  await expect(page.getByRole("button", { name: "New chat" })).toHaveCount(0);
   await expect
     .poll(() => page.evaluate(() => sessionStorage.getItem("movie-agent-conversation")))
     .toBeNull();
