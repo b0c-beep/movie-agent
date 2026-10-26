@@ -2,7 +2,7 @@
 
 Movie Agent helps answer the deceptively difficult question: **what should I watch tonight?** It turns conversational requests such as “give me three 1990s dark romances” or “an action movie with Sylvester Stallone” into grounded, country-aware recommendations.
 
-> Status: Phase 4 is complete. The recommendation and conversation features, plus the genre/language prompt correction, are merged on `main`. Both Vercel production deployments are READY at `763c7e4`; post-merge checks pass (130 backend tests, 13 frontend tests, and 12 Playwright tests). A paced live evaluation found four genre checks needing review, and focused reruns passed after the prompt correction. Phase 4.5 is implemented on a review branch; production remains on the Phase 4 interface until the change is reviewed and merged. Phase 5 release follows that review gate.
+> Status: Phase 4.5 is merged and deployed. Both Vercel production deployments are READY at `8983cb8`; `make check`, the 12-test Playwright suite, and the frontend production build passed before merge. Phase 4 recommendation behavior remains under evaluation: a paced live retry found four genre checks needing review, while focused reruns passed after the prompt correction. Phase 5 release checks can now proceed.
 
 ## Product Experience
 
@@ -11,7 +11,7 @@ Movie Agent helps answer the deceptively difficult question: **what should I wat
 - Stream a safe, visible **predict → decide → act** trace while the agent works.
 - Return responsive movie cards with posters, match explanations, ratings, and external links.
 - Show country-specific streaming providers and their logos.
-- Protect the demo behind a shared passcode to control API usage. The deployed Phase 4 UI asks again on each new tab. The Phase 4.5 review branch checks the existing HttpOnly signed cookie so a valid session stays unlocked across refreshes and tabs without storing the PIN.
+- Protect the demo behind a shared passcode to control API usage. A valid HttpOnly signed session cookie keeps the app unlocked across tabs and refreshes without storing the PIN; each full page load starts a blank conversation.
 
 New searches default to five recommendations and can request a different count, capped at ten. If too few verified matches exist, the app will explain the shortfall. Follow-ups can refine preferences, request another set, or ask about a displayed movie.
 
