@@ -181,6 +181,37 @@ test("starts blank on page load without restoring a saved conversation", async (
   }
 });
 
+test("Cancel stops the active chat request", async ({ page }) => {
+  await authenticate(page);
+  await capabilities(page, true);
+  let releaseRequest!: () => void;
+  let markStarted!: () => void;
+  const heldRequest = new Promise<void>((resolve) => {
+    releaseRequest = resolve;
+  });
+  const requestStarted = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  await page.route("**/api/recommendations/stream", async (route) => {
+    markStarted();
+    await heldRequest;
+    try {
+      await route.fulfill({ status: 200, contentType: "text/event-stream", body: "" });
+    } catch {
+      // The request was intentionally aborted by the Cancel control.
+    }
+  });
+
+  await page.goto("/");
+  await page.getByLabel("Message").fill("Find me a comedy");
+  await page.getByRole("button", { name: "Send" }).click();
+  await requestStarted;
+  await expect(page.getByRole("button", { name: "Cancel" })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByRole("button", { name: "Cancel" })).toHaveCount(0);
+  releaseRequest();
+});
+
 test("keeps chat scroll position while reading older activity", async ({
   page,
 }) => {
