@@ -1,6 +1,10 @@
+from types import SimpleNamespace
+
 import pytest
+from pydantic_ai import UsageLimits
 from pydantic_ai.models.test import TestModel
 
+import movie_agent.agent.intent as intent_agent
 from movie_agent.agent.intent import extract_intent_patch
 from movie_agent.models.intent import MovieIntent, MovieIntentPatch, TurnKind
 
@@ -48,6 +52,25 @@ async def test_intent_agent_rejects_empty_or_oversized_messages() -> None:
         await extract_intent_patch("  ", prior, model=TestModel())
     with pytest.raises(ValueError, match="1-1200"):
         await extract_intent_patch("x" * 1201, prior, model=TestModel())
+
+
+@pytest.mark.asyncio
+async def test_intent_extraction_uses_bounded_request_and_output_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received_limits: list[UsageLimits] = []
+
+    class CapturingAgent:
+        async def run(self, _prompt: str, *, usage_limits: UsageLimits) -> SimpleNamespace:
+            received_limits.append(usage_limits)
+            return SimpleNamespace(output=MovieIntentPatch(turn_kind=TurnKind.REFINE))
+
+    monkeypatch.setattr(intent_agent, "build_intent_agent", lambda _model=None: CapturingAgent())
+
+    await extract_intent_patch("Make those movies newer.", MovieIntent())
+
+    assert received_limits[0].request_limit == 6
+    assert received_limits[0].output_tokens_limit == 10_000
 
 
 @pytest.mark.asyncio
