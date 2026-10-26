@@ -2,7 +2,7 @@
 
 Movie Agent helps answer the deceptively difficult question: **what should I watch tonight?** It turns conversational requests such as “give me three 1990s dark romances” or “an action movie with Sylvester Stallone” into grounded, country-aware recommendations.
 
-> Status: Phase 4 is complete. The recommendation and conversation features, plus the genre/language prompt correction, are merged on `main`. Both Vercel production deployments are READY at `763c7e4`; post-merge checks pass (130 backend tests, 13 frontend tests, and 12 Playwright tests). A paced live evaluation found four genre checks needing review, and focused reruns passed after the prompt correction. Phase 4.5 is implemented on a review branch; production remains on the Phase 4 interface until the change is reviewed and merged. Phase 5 release follows that review gate.
+> Status: Phase 4.5 is merged and deployed. Both Vercel production deployments are READY at `8983cb8`; `make check`, the 12-test Playwright suite, and the frontend production build passed before merge. Phase 4 recommendation behavior remains under evaluation: a paced live retry found four genre checks needing review, while focused reruns passed after the prompt correction. Phase 5 release checks can now proceed.
 
 ## Product Experience
 
@@ -11,7 +11,7 @@ Movie Agent helps answer the deceptively difficult question: **what should I wat
 - Stream a safe, visible **predict → decide → act** trace while the agent works.
 - Return responsive movie cards with posters, match explanations, ratings, and external links.
 - Show country-specific streaming providers and their logos.
-- Protect the demo behind a shared passcode to control API usage. The deployed Phase 4 UI asks again on each new tab. The Phase 4.5 review branch checks the existing HttpOnly signed cookie so a valid session stays unlocked across refreshes and tabs without storing the PIN.
+- Protect the demo behind a shared passcode to control API usage. A valid HttpOnly signed session cookie keeps the app unlocked across tabs and refreshes without storing the PIN; each full page load starts a blank conversation.
 
 New searches default to five recommendations and can request a different count, capped at ten. If too few verified matches exist, the app will explain the shortfall. Follow-ups can refine preferences, request another set, or ask about a displayed movie.
 
@@ -53,17 +53,15 @@ Detailed planning and agent working memory remain local to the development works
 
 ## Development
 
-### Conversation workspace and usage
+### Contributor commits
 
-The deployed workspace keeps each tab's conversation separate. A same-tab reload restores the saved conversation and, when the backend supplies bounded `turns`, its ordered user/agent thread and retained progress events. With an older backend that has no turn history, the page keeps only turns observed in the current tab and says so instead of claiming restored history. New Phase 4 fields and endpoints are optional: missing clarification options, alternatives, filter editing, or run-status recovery fall back to the existing clarification text, plain recommendations, natural-language follow-ups, and a safe manual retry.
+Every pull request must contain at least two focused commits. Each commit may change only one or two files for one concern; split broader work into targeted commits and bundle them in the pull request. Inspect the staged file list before committing, and do not add empty commits just to meet the count.
 
-The deployed progress panel is a compact, scrollable trace across turns. It starts at the newest events, follows new events only while you are already at the bottom, and keeps your position when you scroll back. Clarification choices, active-filter edits, exact results, closest alternatives, and unmet filters are labeled separately so relaxed picks are never presented as exact matches. Rate limiting is reported with a wait-and-retry hint; if the live stream drops, the app may read the saved owned-run status but never resubmits the paid request automatically. The page remains usable without client-side access to any provider or database secret.
+### Conversation chat and usage
 
-### Phase 4.5 chat interface (review branch)
+The chat keeps the current conversation in page memory. Every full page load starts blank; a valid signed HttpOnly cookie keeps access unlocked, and an expired or missing cookie shows the passcode form. Reloading during a run does not replay or resubmit it. A visual reset does not delete conversation or run records already stored by the backend.
 
-The review branch replaces the separate form, conversation summary, progress, filters, and results sections with one chat. Safe agent steps and tool summaries appear as muted messages; movie cards, alternatives, clarifications, answers, and errors appear in the assistant's replies. Filters and streaming-country controls sit beside the composer. Ten example prompts fill the composer without sending a request.
-
-Each full refresh starts a new conversation. A valid signed HttpOnly access cookie continues to unlock the app without storing the PIN; within the page, follow-up turns keep their context. This behavior is implemented on the review branch and is not in the current deployed UI. Phase 5 release follows owner review of the chat overhaul.
+User turns, safe activity summaries, agent replies, movie cards, clarifications, shortfalls, alternatives, and errors appear in one chronological transcript. The transcript follows new messages only while the reader is at the bottom and offers a jump-to-latest control after scrolling up. Active filters and streaming country sit beside the composer. Ten example prompts fill the composer without sending; contextual follow-ups appear after relevant results. Country changes refresh provider data without reranking or another model call. Missing optional Phase 4 capabilities still fall back to clarification text, natural-language filter requests, and safe run recovery.
 
 Prerequisites: Python 3.13, [uv](https://docs.astral.sh/uv/), Node.js 20.9 or newer, and npm. Install pinned dependencies from their lockfiles:
 
@@ -132,7 +130,7 @@ The Phase 1 deployment proof passed on October 25, 2026: [frontend](https://movi
 
 - The protected passcode/session flow, TMDB adapter, recommendation API and cards are merged to `main` and deployed. The Supabase schema and core persistence RPCs have been exercised against the project database.
 - The browser suite uses deterministic fixtures. A hosted rating-threshold request passed at production revision `f536fba`; the live active-claim loser returned HTTP 409 in 1.027 seconds after the Phase 2 migration. The 4,500-token extraction budget passed one synthetic production smoke at `5f8a332`.
-- The deployed UI's per-tab conversation pointer uses `sessionStorage`, so a same-tab reload restores the saved conversation. The Phase 4.5 review branch clears legacy browser conversation keys and starts a blank in-page conversation after reload; persisted server records are not deleted. Recommendations receive only the active conversation's preferences; cross-conversation taste inference is not implemented. Country refresh, optional OMDb enrichment, saved-card questions, atomic conversation-state updates, and Phase 4 actor/title clarification, filter edits, bounded history/run recovery, closest alternatives, and the conversation workspace are deployed on `763c7e4`. In the 100-case manual baseline, 67 primary turns reached the UI's completed state; 38 were rate-limited, two had model behavior errors, and three streams ended early. A paced 38-conversation retry checked 79 expected filters: 75 passed and four genre checks needed review; focused post-fix runs confirmed the supported-genre and language/country corrections. Other baseline cases remain unverified. Completion status alone does not establish recommendation quality.
+- Each page load starts a blank conversation, but old server-side conversation and run records are not deleted. Recommendations receive only the active conversation's preferences; cross-conversation taste inference is not implemented. Country refresh, optional OMDb enrichment, saved-card questions, atomic conversation-state updates, actor/title clarification, filter edits, bounded history/run recovery, closest alternatives, and the chat interface are deployed at `8983cb8`. In the 100-case manual baseline, 67 primary turns reached the UI's completed state; 38 were rate-limited, two had model behavior errors, and three streams ended early. A paced 38-conversation retry checked 79 expected filters: 75 passed and four genre checks needed review; focused post-fix runs confirmed the supported-genre and language/country corrections. Other baseline cases remain unverified. Completion status alone does not establish recommendation quality.
 - Anonymous session, conversation, run, and usage records have bounded payload sizes but no automatic retention cleanup. Expired session content may remain in the database until an owner-approved retention process is added; no cleanup schedule is currently configured.
 - Availability is provider-level and country-specific; it may be incomplete or stale.
 - Subjective qualities such as “dark” are interpretations, not objective catalog fields.
