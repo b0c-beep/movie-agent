@@ -41,12 +41,14 @@ export type RecommendationCard = {
   rank: number;
   match_reason: string;
   caveats: string[];
+  matched_constraints?: string[];
   movie: {
     tmdb_id: number;
     title: string;
     release_year: number | null;
     runtime_minutes: number | null;
     genres: string[];
+    cast?: { tmdb_id: number; name: string }[];
     overview: string;
     poster_url: string | null;
     tmdb_url: string;
