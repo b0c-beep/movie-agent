@@ -130,36 +130,37 @@ test("unlocks the app and displays streamed grounded recommendations", async ({ 
   await page.goto("/");
   await page.getByLabel("Passcode").fill("fixture-passcode");
   await page.getByRole("button", { name: "Enter" }).click();
-  await page.getByLabel("Tell me what you're in the mood for").fill("One science fiction movie");
-  await page.getByRole("button", { name: "Get recommendations" }).click();
+  await page.getByLabel("Message").fill("One science fiction movie");
+  await page.getByRole("button", { name: "Send" }).click();
 
-  await expect(page.getByTestId("status")).toHaveText("Complete");
+  await expect(page.locator(".turnStatus").last()).toHaveText("Complete");
   await expect(page.getByRole("heading", { name: "The Matrix" })).toBeVisible();
   await expect(page.locator(".movieRating")).toContainText("8.2 / 10");
   await expect(page.locator(".providerBadge img")).toHaveAttribute(
     "src",
     "https://image.tmdb.org/t/p/w92/netflix.jpg",
   );
-  await expect(page.locator(".trace li")).toHaveCount(3);
-  const availabilityCountry = page.getByLabel("Streaming availability country");
+  await expect(page.locator(".activityMessage")).toHaveCount(1);
+  const availabilityCountry = page.getByLabel("Streaming country");
   await availabilityCountry.focus();
   await availabilityCountry.selectOption("US");
+  await expect(page.getByLabel("Streaming country")).toBeFocused();
   await expect(page.locator(".providers")).toContainText("Max");
-  await expect(page.getByLabel("Streaming availability country")).toBeFocused();
-  await expect(page.locator(".countryStatus")).toHaveText(
+  await expect(page.locator(".chatTranscript .activityMessage").last()).toHaveText(
     "Streaming availability updated for United States.",
   );
   expect(availabilityRequests).toEqual([{ country: "US", expected_version: 2 }]);
   expect(streamCalls).toBe(1);
   await expect
     .poll(() => page.evaluate(() => sessionStorage.getItem("movie-agent-conversation")))
-    .toBe(JSON.stringify({ id: "fixture-conversation", version: 3 }));
+    .toBeNull();
 });
 
-test("shows streamed failures and keeps the saved conversation version", async ({ page }) => {
+test("shows streamed failures without restoring or persisting a conversation pointer", async ({ page }) => {
   const savedConversation = { id: "fixture-conversation", version: 3 };
   await page.addInitScript((conversation) => {
     window.sessionStorage.setItem("movie-agent-conversation", JSON.stringify(conversation));
+    window.sessionStorage.setItem("movie-agent-thread:fixture-conversation", "old private text");
   }, savedConversation);
   await page.route("**/api/auth/session", (route) =>
     route.fulfill({ status: 401, contentType: "application/json", body: '{"detail":"locked"}' }),
@@ -172,18 +173,6 @@ test("shows streamed failures and keeps the saved conversation version", async (
         authenticated: true,
         session_id: "fixture-session",
         expires_at: "2030-01-01T00:00:00Z",
-      }),
-    }),
-  );
-  await page.route("**/api/recommendations/conversations/fixture-conversation", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        conversation_id: savedConversation.id,
-        version: savedConversation.version,
-        intent: {},
-        result: null,
       }),
     }),
   );
@@ -221,15 +210,17 @@ test("shows streamed failures and keeps the saved conversation version", async (
   await page.goto("/");
   await page.getByLabel("Passcode").fill("fixture-passcode");
   await page.getByRole("button", { name: "Enter" }).click();
-  await expect(page.getByRole("button", { name: "New search" })).toBeVisible();
-  await page.getByLabel("Tell me what you're in the mood for").fill("three comedies");
-  await page.getByRole("button", { name: "Get recommendations" }).click();
+  await page.getByLabel("Message").fill("three comedies");
+  await page.getByRole("button", { name: "Send" }).click();
 
-  await expect(page.getByTestId("status")).toHaveText("Failed");
-  await expect(page.locator(".trace [role=alert]")).toContainText("couldn’t interpret that request");
+  await expect(page.locator(".turnStatus").last()).toHaveText("Failed");
+  await expect(page.locator(".agentError")).toBeFocused();
+  expect(await page.evaluate(() => sessionStorage.getItem("movie-agent-conversation"))).toBeNull();
+  expect(await page.evaluate(() => sessionStorage.getItem("movie-agent-thread:fixture-conversation"))).toBeNull();
+  await expect(page.locator(".agentReply [role=alert]")).toContainText("couldn’t interpret that request");
   await expect
     .poll(() => page.evaluate(() => sessionStorage.getItem("movie-agent-conversation")))
-    .toBe(JSON.stringify(savedConversation));
+    .toBeNull();
 });
 
 test("shows a clarification prompt as an announced result state", async ({ page }) => {
@@ -308,24 +299,21 @@ test("shows a clarification prompt as an announced result state", async ({ page 
   await page.getByLabel("Passcode").fill("fixture-passcode");
   await page.getByRole("button", { name: "Enter" }).click();
   await page
-    .getByLabel("Tell me what you're in the mood for")
+    .getByLabel("Message")
     .fill("Help me narrow this down");
-  await page.getByRole("button", { name: "Get recommendations" }).click();
+  await page.getByRole("button", { name: "Send" }).click();
 
-  await expect(page.getByTestId("status")).toHaveText("Needs clarification");
-  const clarification = page.locator(".clarification");
-  await expect(clarification).toHaveText("Which decade do you prefer?");
-  await expect(clarification).toHaveAttribute("role", "status");
-  await expect(
-    page.getByRole("heading", { name: "A little more detail needed" }),
-  ).toBeVisible();
-  await expect(page.getByText("No verified matches yet")).toHaveCount(0);
+  await expect(page.locator(".turnStatus").last()).toHaveText("Needs clarification");
+  const clarification = page.locator(".agentText");
+  await expect(clarification.locator("p").first()).toHaveText("Which decade do you prefer?");
+  await expect(clarification).toBeVisible();
   await expect
     .poll(() => page.evaluate(() => sessionStorage.getItem("movie-agent-conversation")))
-    .toBe(JSON.stringify({ id: "fixture-clarification", version: 2 }));
+    .toBeNull();
 });
 
-test("restores a saved clarification when the same tab reloads", async ({ page }) => {
+test("starts a blank conversation on reload while keeping a valid signed session", async ({ page }) => {
+  let conversationReads = 0;
   await page.addInitScript(() => {
     window.sessionStorage.setItem("movie-agent-entry-unlocked", "true");
     window.sessionStorage.setItem(
@@ -344,32 +332,28 @@ test("restores a saved clarification when the same tab reloads", async ({ page }
       }),
     }),
   );
-  await page.route("**/api/recommendations/conversations/fixture-clarification", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        conversation_id: "fixture-clarification",
-        version: 2,
-        intent: { requested_count: 5, country: "RO" },
-        result: null,
-        clarification: "Which decade do you prefer?",
-        issues: [],
-        provider_lookups: [],
-      }),
-    }),
-  );
+  await page.route("**/api/recommendations/conversations/**", (route) => {
+    conversationReads += 1;
+    return route.fulfill({ status: 404, contentType: "application/json", body: '{"detail":"not found"}' });
+  });
 
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "A little more detail needed" })).toBeVisible();
-  await expect(page.locator(".clarification")).toHaveText("Which decade do you prefer?");
+  await expect(page.getByRole("heading", { name: "What should we watch tonight?" })).toBeVisible();
+  await expect(page.getByLabel("Message")).toHaveValue("");
+  expect(conversationReads).toBe(0);
+  expect(await page.evaluate(() => sessionStorage.getItem("movie-agent-conversation"))).toBeNull();
+  expect(await page.evaluate(() => sessionStorage.getItem("movie-agent-entry-unlocked"))).toBeNull();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "What should we watch tonight?" })).toBeVisible();
+  expect(conversationReads).toBe(0);
 });
 
-test("announces an expired session and keeps country selection usable", async ({ page }) => {
-  const savedConversation = { id: "fixture-conversation", version: 3 };
-  await page.addInitScript((conversation) => {
-    window.sessionStorage.setItem("movie-agent-conversation", JSON.stringify(conversation));
-  }, savedConversation);
+test("an expired signed session asks for the passcode and starts blank", async ({ page }) => {
+  let conversationReads = 0;
+  await page.addInitScript(() => {
+    sessionStorage.setItem("movie-agent-conversation", JSON.stringify({ id: "old-conversation", version: 3 }));
+    sessionStorage.setItem("movie-agent-thread:old-conversation", "old private text");
+  });
   await page.route("**/api/auth/session", (route) =>
     route.fulfill({ status: 401, contentType: "application/json", body: '{"detail":"locked"}' }),
   );
@@ -377,158 +361,81 @@ test("announces an expired session and keeps country selection usable", async ({
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        authenticated: true,
-        session_id: "fixture-session",
-        expires_at: "2030-01-01T00:00:00Z",
-      }),
+      body: JSON.stringify({ authenticated: true, session_id: "fixture-session", expires_at: "2030-01-01T00:00:00Z" }),
     }),
   );
-  const recommendation = {
-    rank: 1,
-    match_reason: "TMDB lists this as science fiction.",
-    matched_constraints: ["genre:Science Fiction"],
-    caveats: [],
-    movie: {
-      tmdb_id: 603,
-      title: "The Matrix",
-      release_year: 1999,
-      runtime_minutes: 136,
-      genres: ["Science Fiction"],
-      overview: "A hacker discovers a simulated world.",
-      poster_url: null,
-      tmdb_url: "https://www.themoviedb.org/movie/603",
-      imdb_url: null,
-      ratings: [{ source: "tmdb", value: 8.2, scale: "10", vote_count: 100 }],
-      watch_options: {
-        country: "RO",
-        subscription: [{ provider_id: 8, name: "Netflix", logo_path: "/netflix.jpg" }],
-        free: [],
-        ads: [],
-        rent: [],
-        buy: [],
-      },
-    },
-  };
-  await page.route(
-    "**/api/recommendations/conversations/fixture-conversation/availability",
-    (route) =>
-      route.fulfill({
-        status: 401,
-        contentType: "application/json",
-        body: JSON.stringify({ detail: "App session expired" }),
-      }),
-  );
-  await page.route("**/api/recommendations/conversations/fixture-conversation", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        conversation_id: savedConversation.id,
-        version: savedConversation.version,
-        intent: { requested_count: 1, country: "RO" },
-        result: {
-          recommendations: [recommendation],
-          requested_count: 1,
-          shortfall_reason: null,
-        },
-        issues: [],
-        provider_lookups: [
-          { tmdb_id: 603, country: "RO", outcome: "ok", provider_count: 1, detail: null },
-        ],
-      }),
-    }),
-  );
-
-  await page.goto("/");
-  await page.getByLabel("Passcode").fill("fixture-passcode");
-  await page.getByRole("button", { name: "Enter" }).click();
-  await expect(page.getByRole("heading", { name: "The Matrix" })).toBeVisible();
-  const countryPicker = page.getByLabel("Streaming availability country");
-  await countryPicker.focus();
-  await countryPicker.selectOption("US");
-
-  await expect(page.locator(".availabilityError")).toHaveText(
-    "Your session expired. Reload this tab to enter the passcode again.",
-  );
-  await expect(page.locator(".availabilityError")).toHaveAttribute("role", "alert");
-  await expect(countryPicker).toHaveValue("RO");
-  await expect(countryPicker).toBeFocused();
-});
-
-test("asks for the passcode in a new tab but remembers it after reload in the current tab", async ({
-  page,
-}) => {
-  let sessionChecks = 0;
-  let unlocks = 0;
-  const context = page.context();
-  await context.route("**/api/auth/session", (route) => {
-    sessionChecks += 1;
-    return route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        authenticated: true,
-        session_id: "fixture-session",
-        expires_at: "2030-01-01T00:00:00Z",
-      }),
-    });
+  await page.route("**/api/recommendations/conversations/**", (route) => {
+    conversationReads += 1;
+    return route.fulfill({ status: 404, contentType: "application/json", body: '{"detail":"not found"}' });
   });
-  await context.route("**/api/auth/unlock", (route) => {
-    unlocks += 1;
-    return route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        authenticated: true,
-        session_id: "fixture-session",
-        expires_at: "2030-01-01T00:00:00Z",
-      }),
-    });
-  });
-  await context.route("**/api/recommendations/conversations/fixture-conversation", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        conversation_id: "fixture-conversation",
-        version: 3,
-        intent: {},
-        result: null,
-      }),
-    }),
-  );
 
   await page.goto("/");
   await expect(page.getByLabel("Passcode")).toBeVisible();
-  expect(sessionChecks).toBe(0);
+  await page.getByLabel("Passcode").fill("fixture-passcode");
+  await page.getByRole("button", { name: "Enter" }).click();
+  await expect(page.getByRole("heading", { name: "What should we watch tonight?" })).toBeVisible();
+  expect(conversationReads).toBe(0);
+  expect(await page.evaluate(() => sessionStorage.getItem("movie-agent-conversation"))).toBeNull();
+  expect(await page.evaluate(() => sessionStorage.getItem("movie-agent-thread:old-conversation"))).toBeNull();
+});
+
+test("a valid signed session survives reloads while each entry starts a new conversation", async ({ page }) => {
+  let sessionChecks = 0;
+  let unlocks = 0;
+  let authenticated = false;
+  let conversationReads = 0;
+  const context = page.context();
+  await context.route("**/api/auth/session", (route) => {
+    sessionChecks += 1;
+    return route.fulfill(authenticated
+      ? { status: 200, contentType: "application/json", body: JSON.stringify({ authenticated: true, session_id: "fixture-session", expires_at: "2030-01-01T00:00:00Z" }) }
+      : { status: 401, contentType: "application/json", body: '{"detail":"locked"}' });
+  });
+  await context.route("**/api/auth/unlock", (route) => {
+    unlocks += 1;
+    authenticated = true;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ authenticated: true, session_id: "fixture-session", expires_at: "2030-01-01T00:00:00Z" }),
+    });
+  });
+  await context.route("**/api/recommendations/conversations/**", (route) => {
+    conversationReads += 1;
+    return route.fulfill({ status: 404, contentType: "application/json", body: '{"detail":"not found"}' });
+  });
+
+  await page.goto("/");
+  await expect(page.getByLabel("Passcode")).toBeVisible();
+  expect(sessionChecks).toBeGreaterThan(0);
+  const firstEntryChecks = sessionChecks;
   await page.getByLabel("Passcode").fill("fixture-passcode");
   await page.getByRole("button", { name: "Enter" }).click();
   await expect(page.getByRole("heading", { name: "What should we watch tonight?" })).toBeVisible();
   expect(unlocks).toBe(1);
 
   await page.evaluate(() => {
-    sessionStorage.setItem(
-      "movie-agent-conversation",
-      JSON.stringify({ id: "fixture-conversation", version: 3 }),
-    );
+    sessionStorage.setItem("movie-agent-entry-unlocked", "true");
+    sessionStorage.setItem("movie-agent-conversation", JSON.stringify({ id: "fixture-conversation", version: 3 }));
+    sessionStorage.setItem("movie-agent-thread:fixture-conversation", "old private text");
   });
   await page.reload();
   await expect(page.getByRole("heading", { name: "What should we watch tonight?" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "New search" })).toBeVisible();
-  expect(sessionChecks).toBe(1);
+  await expect(page.getByLabel("Message")).toHaveValue("");
+  expect(sessionChecks).toBeGreaterThan(firstEntryChecks);
+  const reloadChecks = sessionChecks;
+  expect(conversationReads).toBe(0);
+  expect(await page.evaluate(() => sessionStorage.getItem("movie-agent-conversation"))).toBeNull();
 
   const popupPromise = context.waitForEvent("page");
   await page.evaluate(() => window.open("/", "_blank"));
   const newTab = await popupPromise;
   await newTab.waitForLoadState();
-  await expect(newTab.getByLabel("Passcode")).toBeVisible();
-  expect(sessionChecks).toBe(1);
-  await newTab.getByLabel("Passcode").fill("fixture-passcode");
-  await newTab.getByRole("button", { name: "Enter" }).click();
   await expect(newTab.getByRole("heading", { name: "What should we watch tonight?" })).toBeVisible();
-  await expect(newTab.getByRole("button", { name: "New search" })).toHaveCount(0);
-  expect(unlocks).toBe(2);
+  await expect(newTab.getByLabel("Passcode")).toHaveCount(0);
+  expect(sessionChecks).toBeGreaterThan(reloadChecks);
+  expect(conversationReads).toBe(0);
+  expect(unlocks).toBe(1);
 });
 
 test("delivers an event before the stream completes", async ({ page }) => {

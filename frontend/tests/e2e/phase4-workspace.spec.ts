@@ -69,13 +69,7 @@ function traceEvent(
   };
 }
 
-async function authenticate(page: Page, conversation?: { id: string; version: number }) {
-  await page.addInitScript((saved) => {
-    window.sessionStorage.setItem("movie-agent-entry-unlocked", "true");
-    if (saved) {
-      window.sessionStorage.setItem("movie-agent-conversation", JSON.stringify(saved));
-    }
-  }, conversation ?? null);
+async function authenticate(page: Page) {
   await page.route("**/api/auth/session", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(SESSION) }),
   );
@@ -133,70 +127,42 @@ function sseResponse(
   });
 }
 
-test("restores the server conversation thread and separates alternatives", async ({ page }) => {
-  const firstResult = recommendationResult({
-    alternatives: [
-      {
-        recommendation: recommendation("Arrival", 329865, 2016),
-        unmet_filters: ["Genre: Comedy", "Release year: 1990s"],
-      },
-    ],
-  });
-  const snapshot = {
-    conversation_id: "fixture-history",
-    version: 4,
-    intent: { genres: ["Comedy"], requested_count: 1, country: "RO" },
-    result: firstResult,
-    issues: [],
-    provider_lookups: [],
-    turns: [
-      {
-        run_id: "run-history-1",
-        user_message: "three 1990s comedies",
-        status: "completed",
-        response: firstResult,
-        answer: null,
-        events: [
-          traceEvent("run-history-1", 1, "run_started", "predict", "Starting a search"),
-          traceEvent("run-history-1", 2, "recommendations", "complete", "Prepared one pick"),
-          traceEvent("run-history-1", 3, "completed", "complete", "Run completed"),
-        ],
-      },
-      {
-        run_id: "run-history-2",
-        user_message: "tell me about the first one",
-        status: "completed",
-        response: null,
-        answer: "The Truman Show (1998); genres Comedy.",
-        events: [
-          traceEvent("run-history-2", 1, "run_started", "predict", "Starting a search"),
-          traceEvent("run-history-2", 2, "completed", "complete", "Answered from saved cards"),
-        ],
-      },
-    ],
-  };
-  await authenticate(page, { id: "fixture-history", version: 4 });
+test("starts blank on page load without restoring a saved conversation", async ({ page }) => {
+  let conversationReads = 0;
+  await authenticate(page);
   await capabilities(page, true);
-  await page.route("**/api/recommendations/conversations/fixture-history", (route) =>
-    routeJson(route, snapshot),
-  );
+  await page.addInitScript(() => {
+    sessionStorage.setItem("movie-agent-conversation", JSON.stringify({ id: "old", version: 4 }));
+    sessionStorage.setItem("movie-agent-thread:old", "private old conversation text");
+  });
+  await page.route("**/api/recommendations/conversations/**", (route) => {
+    conversationReads += 1;
+    return routeJson(route, {} , 404);
+  });
 
   await page.goto("/");
-
-  await expect(page.getByText("Restored from this conversation.")).toBeVisible();
-  await expect(page.getByText("three 1990s comedies")).toBeVisible();
-  await expect(page.getByText("tell me about the first one")).toBeVisible();
-  await expect(page.locator(".threadAnswer")).toContainText("The Truman Show (1998)");
-  await expect(page.getByRole("heading", { name: "Exact matches" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Closest alternatives" })).toBeVisible();
-  await expect(page.locator(".unmetFilters")).toContainText("Genre: Comedy");
-  await expect(page.locator(".unmetFilters")).toContainText("Release year: 1990s");
-  await expect(page.getByText(/Kept in this tab/)).toHaveCount(0);
-  await expect(page.getByText(/Turn 1/)).toBeVisible();
-  await expect(page.getByText(/Turn 2/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "What should we watch tonight?" })).toBeVisible();
+  await expect(page.getByLabel("Message")).toHaveValue("");
+  await expect(page.getByText("private old conversation text")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "New chat" })).toHaveCount(0);
+  await expect(page.locator(".examplePrompt")).toHaveCount(10);
+  await page.getByLabel("Message").focus();
+  await page.getByLabel("Message").press("ArrowDown");
+  await expect(page.getByRole("option", { name: "Show me three action movies." })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await page.getByLabel("Message").press("Enter");
+  await expect(page.getByLabel("Message")).toHaveValue("Show me three action movies.");
+  await expect(page.getByLabel("Message")).toBeFocused();
+  await page.getByLabel("Message").press("Escape");
+  await expect(page.locator(".examplePrompts ul")).toHaveCount(0);
+  expect(conversationReads).toBe(0);
+  await page.setViewportSize({ width: 320, height: 760 });
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
 });
 
-test("starts the retained trace at the newest events and preserves scroll while reading older ones", async ({
+test("keeps chat scroll position while reading older activity", async ({
   page,
 }) => {
   const runEvents = (runId: string, label: string) => [
@@ -239,26 +205,28 @@ test("starts the retained trace at the newest events and preserves scroll while 
       },
     ],
   };
-  await authenticate(page, { id: "fixture-trace", version: 4 });
+  await authenticate(page);
   await capabilities(page, true);
   await page.route("**/api/recommendations/conversations/fixture-trace", (route) =>
     routeJson(route, snapshot),
   );
   await page.route("**/api/recommendations/stream", (route) => {
     const runId = "run-trace-4";
-    const events = [
-      traceEvent(runId, 1, "run_started", "predict", "fourth turn: starting"),
-      traceEvent(runId, 2, "decision", "decide", "fourth turn: interpreting preferences"),
-      traceEvent(runId, 3, "tool_started", "act", "fourth turn: checking TMDB"),
-      traceEvent(runId, 4, "tool_finished", "act", "fourth turn: TMDB verification finished"),
-      traceEvent(runId, 5, "recommendations", "complete", "fourth turn: picks ready", recommendationResult()),
-      traceEvent(runId, 6, "completed", "complete", "fourth turn: complete"),
-    ];
+    const events = Array.from({ length: 24 }, (_, index) =>
+      traceEvent(runId, index + 1, index === 0 ? "run_started" : "tool_finished", index === 0 ? "predict" : "act", `Search step ${index + 1}`),
+    );
+    events.push(
+      traceEvent(runId, 25, "recommendations", "complete", "fourth turn: picks ready", recommendationResult()),
+      traceEvent(runId, 26, "completed", "complete", "fourth turn: complete"),
+    );
     return sseResponse(route, "fixture-trace", runId, events);
   });
 
   await page.goto("/");
-  const scroller = page.locator(".traceScroller");
+  await page.getByLabel("Message").fill("Show me one comedy");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator(".turnStatus").last()).toHaveText("Complete");
+  const scroller = page.locator(".chatTranscript");
   await expect(scroller).toBeVisible();
   await expect
     .poll(() =>
@@ -272,18 +240,18 @@ test("starts the retained trace at the newest events and preserves scroll while 
     node.scrollTop = 0;
     node.dispatchEvent(new Event("scroll"));
   });
-  await expect(page.getByRole("button", { name: "Jump to newest progress" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Jump to latest" })).toBeVisible();
   const before = await scroller.evaluate((node) => node.scrollTop);
 
-  await page.getByLabel("Tell me what you're in the mood for").fill("newer comedies");
-  await page.getByRole("button", { name: "Get recommendations" }).click();
-  await expect(page.getByTestId("status")).toHaveText("Complete");
+  await page.getByLabel("Message").fill("newer comedies");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator(".turnStatus").last()).toHaveText("Complete");
 
   await expect
     .poll(() => scroller.evaluate((node) => node.scrollTop))
     .toBe(before);
 
-  await page.getByRole("button", { name: "Jump to newest progress" }).click();
+  await page.getByRole("button", { name: "Jump to latest" }).click();
   await expect
     .poll(() => scroller.evaluate((node) => node.scrollTop > 0))
     .toBe(true);
@@ -305,7 +273,7 @@ test("sends structured clarification choices and filter edits when the backend s
     issues: [],
     provider_lookups: [],
   };
-  await authenticate(page, { id: "fixture-support", version: 2 });
+  await authenticate(page);
   await capabilities(page, true);
   await page.route("**/api/recommendations/conversations/fixture-support", (route) =>
     routeJson(route, snapshot),
@@ -314,23 +282,33 @@ test("sends structured clarification choices and filter edits when the backend s
   await page.route("**/api/recommendations/stream", (route) => {
     requests.push(route.request().postDataJSON() as Record<string, unknown>);
     const runId = `run-support-${requests.length}`;
-    return sseResponse(route, "fixture-support", runId, [
+    const events = requests.length === 1
+      ? [
+          traceEvent(runId, 1, "run_started", "predict", "Starting a search"),
+          traceEvent(runId, 2, "needs_clarification", "complete", "Which Jim Carrey do you mean?", snapshot),
+        ]
+      : [
       traceEvent(runId, 1, "run_started", "predict", "Starting a search"),
       traceEvent(runId, 2, "recommendations", "complete", "Prepared one pick", recommendationResult()),
       traceEvent(runId, 3, "completed", "complete", "Run completed"),
-    ]);
+      ];
+    return sseResponse(route, "fixture-support", runId, events);
   });
 
   await page.goto("/");
+  await page.getByLabel("Message").fill("Find Jim Carrey movies");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByRole("button", { name: "Use this choice" })).toBeVisible();
+  await expect(page.locator(".clarificationChoices")).toBeFocused();
   await page.getByRole("button", { name: "Use this choice" }).click();
-  await expect.poll(() => requests.length).toBe(1);
-  expect(requests[0].clarification_choice_id).toBe("person-1");
-  expect(String(requests[0].message)).toContain("I meant Jim Carrey");
+  await expect.poll(() => requests.length).toBe(2);
+  expect(requests[1].clarification_choice_id).toBe("person-1");
+  expect(String(requests[1].message)).toContain("I meant Jim Carrey");
 
   await expect(page.getByRole("heading", { name: "The Truman Show" })).toBeVisible();
   await page.getByRole("button", { name: "Remove Genre Comedy filter" }).click();
-  await expect.poll(() => requests.length).toBe(2);
-  expect(requests[1].filter_edit).toEqual({
+  await expect.poll(() => requests.length).toBe(3);
+  expect(requests[2].filter_edit).toEqual({
     field: "genres",
     operation: "remove",
     value: "Comedy",
@@ -353,7 +331,7 @@ test("falls back to descriptive messages when the current backend lacks Phase 4 
     issues: [],
     provider_lookups: [],
   };
-  await authenticate(page, { id: "fixture-fallback", version: 2 });
+  await authenticate(page);
   await capabilities(page, false);
   await page.route("**/api/recommendations/conversations/fixture-fallback", (route) =>
     routeJson(route, snapshot),
@@ -362,24 +340,33 @@ test("falls back to descriptive messages when the current backend lacks Phase 4 
   await page.route("**/api/recommendations/stream", (route) => {
     requests.push(route.request().postDataJSON() as Record<string, unknown>);
     const runId = `run-fallback-${requests.length}`;
-    return sseResponse(route, "fixture-fallback", runId, [
+    const events = requests.length === 1
+      ? [
+          traceEvent(runId, 1, "run_started", "predict", "Starting a search"),
+          traceEvent(runId, 2, "needs_clarification", "complete", "Which Jim Carrey do you mean?", snapshot),
+        ]
+      : [
       traceEvent(runId, 1, "run_started", "predict", "Starting a search"),
       traceEvent(runId, 2, "recommendations", "complete", "Prepared one pick", recommendationResult()),
       traceEvent(runId, 3, "completed", "complete", "Run completed"),
-    ]);
+      ];
+    return sseResponse(route, "fixture-fallback", runId, events);
   });
 
   await page.goto("/");
+  await page.getByLabel("Message").fill("Find Jim Carrey comedies");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByRole("button", { name: "Use this choice" })).toBeVisible();
   await page.getByRole("button", { name: "Use this choice" }).click();
-  await expect.poll(() => requests.length).toBe(1);
-  expect(requests[0]).not.toHaveProperty("clarification_choice_id");
-  expect(String(requests[0].message)).toContain("I meant Jim Carrey");
+  await expect.poll(() => requests.length).toBe(2);
+  expect(requests[1]).not.toHaveProperty("clarification_choice_id");
+  expect(String(requests[1].message)).toContain("I meant Jim Carrey");
 
   await expect(page.getByRole("heading", { name: "The Truman Show" })).toBeVisible();
   await page.getByRole("button", { name: "Remove Genre Comedy filter" }).click();
-  await expect.poll(() => requests.length).toBe(2);
-  expect(requests[1]).not.toHaveProperty("filter_edit");
-  expect(String(requests[1].message)).toContain("Remove Comedy from the genre filter");
+  await expect.poll(() => requests.length).toBe(3);
+  expect(requests[2]).not.toHaveProperty("filter_edit");
+  expect(String(requests[2].message)).toContain("Remove Comedy from the genre filter");
 });
 
 test("shows a rate-limit message with retry guidance and does not resubmit", async ({ page }) => {
@@ -404,13 +391,13 @@ test("shows a rate-limit message with retry guidance and does not resubmit", asy
   });
 
   await page.goto("/");
-  await page.getByLabel("Tell me what you're in the mood for").fill("three comedies");
-  await page.getByRole("button", { name: "Get recommendations" }).click();
+  await page.getByLabel("Message").fill("three comedies");
+  await page.getByRole("button", { name: "Send" }).click();
 
-  await expect(page.getByTestId("status")).toHaveText("Failed");
-  await expect(page.locator(".trace [role=alert]")).toContainText(
+  await expect(page.locator(".turnStatus").last()).toHaveText("Failed");
+  await expect(page.locator(".agentReply [role=alert]")).toContainText(
     "The recommendation model is temporarily rate limited",
   );
-  await expect(page.locator(".trace [role=alert]")).toContainText("Wait about 15 seconds");
+  await expect(page.locator(".agentReply [role=alert]")).toContainText("Wait about 15 seconds");
   expect(streamCalls).toBe(1);
 });

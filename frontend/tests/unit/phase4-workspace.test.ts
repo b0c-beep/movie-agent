@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -17,8 +17,6 @@ vi.mock("@/lib/api", () => ({
   getRunStatus: mocks.getRunStatus,
   streamRecommendations: mocks.streamRecommendations,
 }));
-
-const STORAGE_KEY = "movie-agent-conversation";
 
 type StreamInput = {
   message: string;
@@ -93,16 +91,21 @@ function useConversation(
   version: number,
   snapshot: Record<string, unknown>,
 ) {
-  window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ id, version }));
-  mocks.getConversation.mockResolvedValue({
-    conversation_id: id,
+  mocks.getConversation.mockImplementation(async (conversationId: string) => ({
     version,
     intent: {},
     result: null,
     issues: [],
     provider_lookups: [],
     ...snapshot,
-  });
+    conversation_id: conversationId,
+  }));
+}
+
+async function startConversation(prompt = "seed conversation") {
+  fireEvent.change(screen.getByLabelText("Message"), { target: { value: prompt } });
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await screen.findByRole("button", { name: "New chat" });
 }
 
 function mockStream(
@@ -119,10 +122,13 @@ function mockStream(
     ) => {
       calls.push(input);
       const conversationId = input.conversationId ?? "conv-new";
-      onStart?.({ conversationId, runId: "run-1" });
-      for (const event of events(input)) onEvent(event);
+      const runId = `run-${calls.length}`;
+      onStart?.({ conversationId, runId });
+      for (const event of events(input)) {
+        onEvent({ ...event, run_id: runId, event_id: `${runId}-${event.sequence}` });
+      }
       if (options.failAfterStart) throw options.failAfterStart;
-      return { conversationId, runId: "run-1" };
+      return { conversationId, runId };
     },
   );
   return calls;
@@ -144,48 +150,18 @@ describe("phase 4 conversation workspace", () => {
     cleanup();
   });
 
-  it("restores the ordered server thread and retained events", async () => {
-    const firstResult = result();
-    useConversation("conv-history", 4, {
-      intent: { genres: ["Comedy"], requested_count: 1, country: "RO" },
-      result: firstResult,
-      turns: [
-        {
-          run_id: "run-1",
-          user_message: "one comedy",
-          status: "completed",
-          response: firstResult,
-          answer: null,
-          events: [traceEvent("run_started", 1), traceEvent("completed", 2)],
-        },
-        {
-          run_id: "run-2",
-          user_message: "tell me about the first one",
-          status: "completed",
-          response: null,
-          answer: "The Matrix (1999); genres Science Fiction.",
-          events: [
-            traceEvent("run_started", 1, { run_id: "run-2", event_id: "run-2-start" }),
-            traceEvent("completed", 2, { run_id: "run-2", event_id: "run-2-complete" }),
-          ],
-        },
-      ],
-    });
-
+  it("starts with a blank workspace instead of restoring browser conversation state", async () => {
+    window.sessionStorage.setItem("movie-agent-conversation", JSON.stringify({ id: "old", version: 4 }));
+    window.sessionStorage.setItem("movie-agent-thread:old", "private old conversation text");
     render(createElement(RecommendationWorkspace));
 
-    expect(await screen.findByText("Restored from this conversation.")).toBeInTheDocument();
-    expect(screen.getByText("one comedy")).toBeInTheDocument();
-    expect(screen.getByText("tell me about the first one")).toBeInTheDocument();
-    expect(screen.getAllByText(/The Matrix \(1999\)/).length).toBeGreaterThan(0);
-    expect(screen.getByRole("heading", { name: "The Matrix" })).toBeInTheDocument();
-    expect(screen.getByText("Comedy")).toBeInTheDocument();
-    expect(screen.getByText(/Turn 1/)).toBeInTheDocument();
-    expect(screen.getByText(/Turn 2/)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "What should we watch tonight?" })).toBeInTheDocument();
+    expect(within(document.getElementById("example-prompts")!).getAllByRole("option")).toHaveLength(10);
+    expect(mocks.getConversation).not.toHaveBeenCalled();
+    expect(screen.queryByText("private old conversation text")).not.toBeInTheDocument();
   });
 
-  it("keeps observed turns in this tab without claiming restored history", async () => {
-    useConversation("conv-local", 1, { intent: { requested_count: 1 }, result: null });
+  it("keeps observed turns in the current page", async () => {
     const calls = mockStream(() => [
       traceEvent("run_started", 1),
       traceEvent("recommendations", 2, { data: result() }),
@@ -193,22 +169,16 @@ describe("phase 4 conversation workspace", () => {
     ]);
 
     render(createElement(RecommendationWorkspace));
-    await screen.findByRole("button", { name: "New search" });
-    fireEvent.change(screen.getByLabelText(/in the mood/i), {
+    fireEvent.change(screen.getByLabelText("Message"), {
       target: { value: "one comedy" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Get recommendations" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
-    expect(await screen.findByTestId("status")).toHaveTextContent("Complete");
+    expect(await screen.findByText("Complete")).toBeInTheDocument();
     expect(screen.getByText("one comedy")).toBeInTheDocument();
-    expect(
-      screen.getByText("Kept in this tab; older history is not available from this backend."),
-    ).toBeInTheDocument();
-    expect(screen.queryByText("Restored from this conversation.")).not.toBeInTheDocument();
+    expect(screen.getByText("run_started summary")).toBeInTheDocument();
     expect(calls).toHaveLength(1);
-    expect(
-      window.sessionStorage.getItem("movie-agent-thread:conv-local"),
-    ).toContain("one comedy");
+    expect(window.sessionStorage.getItem("movie-agent-thread:conv-new")).toBeNull();
   });
 
   it("sends a structured clarification choice when capabilities support it", async () => {
@@ -227,18 +197,37 @@ describe("phase 4 conversation workspace", () => {
         { choice_id: "person-2", kind: "person", label: "Jim Carrey", detail: "Producer" },
       ],
     });
-    const calls = mockStream(() => [
-      traceEvent("run_started", 1),
-      traceEvent("recommendations", 2, { data: result() }),
-      traceEvent("completed", 3),
-    ]);
+    let run = 0;
+    const calls = mockStream(() => {
+      run += 1;
+      return run === 1
+        ? [
+            traceEvent("run_started", 1),
+            traceEvent("needs_clarification", 2, {
+              data: {
+                ...result(),
+                clarification: "Which Jim Carrey do you mean?",
+                clarification_options: [
+                  { choice_id: "person-1", kind: "person", label: "Jim Carrey", detail: "Actor" },
+                  { choice_id: "person-2", kind: "person", label: "Jim Carrey", detail: "Producer" },
+                ],
+              },
+            }),
+          ]
+        : [
+            traceEvent("run_started", 1),
+            traceEvent("recommendations", 2, { data: result() }),
+            traceEvent("completed", 3),
+          ];
+    });
 
     render(createElement(RecommendationWorkspace));
+    await startConversation("Who do you mean by Jim Carrey?");
     fireEvent.click(await screen.findByRole("button", { name: "Use this choice" }));
 
-    await waitFor(() => expect(calls).toHaveLength(1));
-    expect(calls[0].clarificationChoiceId).toBe("person-1");
-    expect(calls[0].message).toContain("I meant Jim Carrey");
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].clarificationChoiceId).toBe("person-1");
+    expect(calls[1].message).toContain("I meant Jim Carrey");
   });
 
   it("falls back to a descriptive message when clarification choices are unsupported", async () => {
@@ -249,18 +238,37 @@ describe("phase 4 conversation workspace", () => {
         { choice_id: "person-2", kind: "person", label: "Jim Carrey", detail: "Producer" },
       ],
     });
-    const calls = mockStream(() => [
-      traceEvent("run_started", 1),
-      traceEvent("recommendations", 2, { data: result() }),
-      traceEvent("completed", 3),
-    ]);
+    let run = 0;
+    const calls = mockStream(() => {
+      run += 1;
+      return run === 1
+        ? [
+            traceEvent("run_started", 1),
+            traceEvent("needs_clarification", 2, {
+              data: {
+                ...result(),
+                clarification: "Which Jim Carrey do you mean?",
+                clarification_options: [
+                  { choice_id: "person-1", kind: "person", label: "Jim Carrey", detail: "Actor" },
+                  { choice_id: "person-2", kind: "person", label: "Jim Carrey", detail: "Producer" },
+                ],
+              },
+            }),
+          ]
+        : [
+            traceEvent("run_started", 1),
+            traceEvent("recommendations", 2, { data: result() }),
+            traceEvent("completed", 3),
+          ];
+    });
 
     render(createElement(RecommendationWorkspace));
+    await startConversation("Who do you mean by Jim Carrey?");
     fireEvent.click(await screen.findByRole("button", { name: "Use this choice" }));
 
-    await waitFor(() => expect(calls).toHaveLength(1));
-    expect(calls[0].clarificationChoiceId).toBeNull();
-    expect(calls[0].message).toContain("I meant Jim Carrey");
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].clarificationChoiceId).toBeNull();
+    expect(calls[1].message).toContain("I meant Jim Carrey");
   });
 
   it("uses a typed filter edit when supported and a natural-language fallback otherwise", async () => {
@@ -277,21 +285,21 @@ describe("phase 4 conversation workspace", () => {
     });
     let calls = mockStream(() => [
       traceEvent("run_started", 1),
-      traceEvent("recommendations", 2, { data: result({ intent: { requested_count: 1 } }) }),
+      traceEvent("recommendations", 2, { data: result() }),
       traceEvent("completed", 3),
     ]);
 
     render(createElement(RecommendationWorkspace));
+    await startConversation("Show me one comedy");
     fireEvent.click(await screen.findByRole("button", { name: "Remove Genre Comedy filter" }));
-    await waitFor(() => expect(calls).toHaveLength(1));
-    expect(calls[0].filterEdit).toEqual({
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].filterEdit).toEqual({
       field: "genres",
       operation: "remove",
       value: "Comedy",
     });
 
     cleanup();
-    window.sessionStorage.clear();
     mocks.streamRecommendations.mockReset();
     mocks.getRecommendationCapabilities.mockResolvedValue(null);
     useConversation("conv-edit", 2, {
@@ -300,15 +308,16 @@ describe("phase 4 conversation workspace", () => {
     });
     calls = mockStream(() => [
       traceEvent("run_started", 1),
-      traceEvent("recommendations", 2, { data: result({ intent: { requested_count: 1 } }) }),
+      traceEvent("recommendations", 2, { data: result() }),
       traceEvent("completed", 3),
     ]);
 
     render(createElement(RecommendationWorkspace));
+    await startConversation("Show me one comedy");
     fireEvent.click(await screen.findByRole("button", { name: "Remove Genre Comedy filter" }));
-    await waitFor(() => expect(calls).toHaveLength(1));
-    expect(calls[0].filterEdit).toBeNull();
-    expect(calls[0].message).toBe("Remove Comedy from the genre filter.");
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].filterEdit).toBeNull();
+    expect(calls[1].message).toBe("Remove Comedy from the genre filter.");
   });
 
   it("shows exact results and closest alternatives with every unmet filter", async () => {
@@ -326,17 +335,32 @@ describe("phase 4 conversation workspace", () => {
         ],
       }),
     });
+    const alternatives = result({
+      alternatives: [
+        {
+          recommendation: recommendation("Arrival", 329865, 2016),
+          unmet_filters: ["Genre: Comedy", "Year: 1990s"],
+        },
+        { recommendation: recommendation("Moon", 17431, 2009), unmet_filters: ["Genre: Comedy"] },
+      ],
+    });
+    mockStream(() => [
+      traceEvent("run_started", 1),
+      traceEvent("recommendations", 2, { data: alternatives }),
+      traceEvent("completed", 3),
+    ]);
 
     render(createElement(RecommendationWorkspace));
+    await startConversation("Show me one comedy");
 
     expect(
       await screen.findByRole("heading", { name: "Closest alternatives" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Exact matches" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "1 of 1 exact picks" })).toBeInTheDocument();
     expect(screen.getAllByText("Genre: Comedy").length).toBeGreaterThan(0);
     expect(screen.getByText("Year: 1990s")).toBeInTheDocument();
     expect(screen.getAllByText("Closest alternative")).toHaveLength(2);
-    expect(screen.getByRole("button", { name: "Relax or edit filter: Year: 1990s" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Relax" })).toHaveLength(3);
   });
 
   it("reports model rate limiting with a safe retry hint", async () => {
@@ -351,16 +375,16 @@ describe("phase 4 conversation workspace", () => {
     ]);
 
     render(createElement(RecommendationWorkspace));
-    fireEvent.change(screen.getByLabelText(/in the mood/i), {
+    fireEvent.change(screen.getByLabelText("Message"), {
       target: { value: "three comedies" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Get recommendations" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "The recommendation model is temporarily rate limited",
     );
     expect(screen.getByRole("alert")).toHaveTextContent("Wait about 20 seconds");
-    expect(screen.getByTestId("status")).toHaveTextContent("Failed");
+    expect(screen.getByText("Failed")).toBeInTheDocument();
   });
 
   it("recovers an interrupted stream from the owned run status without resubmitting", async () => {
@@ -394,21 +418,16 @@ describe("phase 4 conversation workspace", () => {
     });
 
     render(createElement(RecommendationWorkspace));
-    await screen.findByRole("button", { name: "New search" });
-    fireEvent.change(screen.getByLabelText(/in the mood/i), {
+    fireEvent.change(screen.getByLabelText("Message"), {
       target: { value: "one comedy" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Get recommendations" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     expect(await screen.findByRole("heading", { name: "The Matrix" })).toBeInTheDocument();
-    expect(screen.getByTestId("status")).toHaveTextContent("Complete");
+    expect(screen.getByText("Complete")).toBeInTheDocument();
     expect(mocks.getRunStatus).toHaveBeenCalledWith("run-1");
     expect(calls).toHaveLength(1);
-    await waitFor(() =>
-      expect(window.sessionStorage.getItem(STORAGE_KEY)).toBe(
-        JSON.stringify({ id: "conv-recover", version: 5 }),
-      ),
-    );
+    expect(window.sessionStorage.getItem("movie-agent-conversation")).toBeNull();
   });
 
   it("shows a safe interruption without querying run status on an older backend", async () => {
@@ -419,11 +438,10 @@ describe("phase 4 conversation workspace", () => {
     );
 
     render(createElement(RecommendationWorkspace));
-    await screen.findByRole("button", { name: "New search" });
-    fireEvent.change(screen.getByLabelText(/in the mood/i), {
+    fireEvent.change(screen.getByLabelText("Message"), {
       target: { value: "one comedy" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Get recommendations" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "The live connection was interrupted",

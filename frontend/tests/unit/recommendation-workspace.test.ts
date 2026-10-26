@@ -18,8 +18,6 @@ vi.mock("@/lib/api", () => ({
   streamRecommendations: mocks.streamRecommendations,
 }));
 
-const STORAGE_KEY = "movie-agent-conversation";
-
 function traceEvent(type: string, overrides: Record<string, unknown> = {}) {
   return {
     event_id: `${type}-event`,
@@ -37,8 +35,8 @@ function traceEvent(type: string, overrides: Record<string, unknown> = {}) {
 }
 
 async function submitPrompt(prompt: string) {
-  fireEvent.change(screen.getByLabelText(/in the mood/i), { target: { value: prompt } });
-  fireEvent.click(screen.getByRole("button", { name: "Get recommendations" }));
+  fireEvent.change(screen.getByLabelText("Message"), { target: { value: prompt } });
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
 }
 
 describe("RecommendationWorkspace terminal events", () => {
@@ -57,14 +55,7 @@ describe("RecommendationWorkspace terminal events", () => {
     cleanup();
   });
 
-  it("shows a safe failure without advancing the saved conversation", async () => {
-    window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ id: "conv-1", version: 3 }));
-    mocks.getConversation.mockResolvedValue({
-      conversation_id: "conv-1",
-      version: 3,
-      intent: {},
-      result: null,
-    });
+  it("shows a safe failure without persisting conversation state", async () => {
     mocks.streamRecommendations.mockImplementation(
       async (_input: unknown, onEvent: (event: unknown) => void) => {
         onEvent(
@@ -81,16 +72,13 @@ describe("RecommendationWorkspace terminal events", () => {
     );
 
     render(createElement(RecommendationWorkspace));
-    await screen.findByRole("button", { name: "New search" });
     await submitPrompt("three comedies");
 
-    expect(await screen.findByText("Failed")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("couldn’t interpret that request");
     expect(screen.getByRole("alert")).toHaveTextContent("couldn’t interpret that request");
-    expect(window.sessionStorage.getItem(STORAGE_KEY)).toBe(
-      JSON.stringify({ id: "conv-1", version: 3 }),
-    );
+    expect(window.sessionStorage.getItem("movie-agent-conversation")).toBeNull();
     expect(mocks.streamRecommendations).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationId: "conv-1", expectedVersion: 3 }),
+      expect.objectContaining({ conversationId: null, expectedVersion: null }),
       expect.any(Function),
       expect.any(AbortSignal),
       expect.any(Function),
@@ -116,8 +104,6 @@ describe("RecommendationWorkspace terminal events", () => {
     await submitPrompt("three comedies");
 
     expect(await screen.findByText("Complete")).toBeInTheDocument();
-    expect(window.sessionStorage.getItem(STORAGE_KEY)).toBe(
-      JSON.stringify({ id: "conv-2", version: 2 }),
-    );
+    expect(window.sessionStorage.getItem("movie-agent-conversation")).toBeNull();
   });
 });
