@@ -10,7 +10,7 @@ import pytest
 import movie_agent.api.recommendations as recommendations_api
 from movie_agent.api.recommendations import MAX_RUN_SECONDS, RUN_LEASE_SECONDS
 from movie_agent.main import app
-from movie_agent.models.intent import MovieIntentPatch, TurnKind
+from movie_agent.models.intent import MovieIntentPatch, StringCollectionPatch, TurnKind
 from movie_agent.models.movies import (
     MovieDetails,
     Rating,
@@ -153,6 +153,38 @@ def test_inspect_results_does_not_answer_unrelated_questions_from_empty_history(
     assert answer == (
         "There are no saved movie cards in this conversation yet. Ask for recommendations first."
     )
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["What is the weather tomorrow?", "What about the weather?", "What was Heat's budget?"],
+)
+def test_inspect_results_does_not_treat_a_single_saved_card_as_an_off_topic_answer(
+    message: str,
+) -> None:
+    batch = RecommendationBatch(
+        recommendations=[
+            Recommendation(
+                rank=1,
+                movie=MovieDetails(
+                    tmdb_id=1,
+                    title="Heat",
+                    release_year=1995,
+                    tmdb_url="https://www.themoviedb.org/movie/1",
+                ),
+                match_reason="Crime drama match.",
+            )
+        ],
+        requested_count=1,
+    )
+
+    answer = recommendations_api._answer_from_saved_results(message, batch.model_dump(mode="json"))
+    movie_answer = recommendations_api._answer_from_saved_results(
+        "What rating does it have?", batch.model_dump(mode="json")
+    )
+
+    assert answer == recommendations_api.OUT_OF_SCOPE_ANSWER
+    assert movie_answer.startswith("Heat (1995)")
 
 
 @pytest.mark.asyncio
@@ -585,8 +617,17 @@ async def test_country_availability_refresh_updates_only_providers_and_saved_cou
 
 
 @pytest.mark.asyncio
-async def test_inspect_results_completes_without_tmdb_and_preserves_saved_cards(
+@pytest.mark.parametrize(
+    ("turn_kind", "message"),
+    [
+        (TurnKind.INSPECT_RESULTS, "Tell me about the second one"),
+        (TurnKind.OUT_OF_SCOPE, "What is the weather tomorrow?"),
+    ],
+)
+async def test_non_discovery_turns_complete_without_tmdb_and_preserve_saved_cards(
     monkeypatch: pytest.MonkeyPatch,
+    turn_kind: TurnKind,
+    message: str,
 ) -> None:
     session_id = uuid4()
     conversation_id = uuid4()
@@ -636,6 +677,8 @@ async def test_inspect_results_completes_without_tmdb_and_preserves_saved_cards(
             }
         ],
     }
+    if turn_kind is TurnKind.OUT_OF_SCOPE:
+        state["last_clarification"] = "Which actor did you mean?"
     row = {
         "id": str(conversation_id),
         "session_id": str(session_id),
@@ -689,7 +732,14 @@ async def test_inspect_results_completes_without_tmdb_and_preserves_saved_cards(
         )
 
     async def inspect_patch(message, prior, *, model=None):
-        return MovieIntentPatch(turn_kind=TurnKind.INSPECT_RESULTS)
+        return MovieIntentPatch(
+            turn_kind=turn_kind,
+            genres=(
+                StringCollectionPatch(set=["Horror"])
+                if turn_kind is TurnKind.OUT_OF_SCOPE
+                else None
+            ),
+        )
 
     monkeypatch.setattr(recommendations_api, "extract_intent_patch", inspect_patch)
     persistence_http = httpx.AsyncClient(transport=httpx.MockTransport(persistence_handler))
@@ -718,7 +768,7 @@ async def test_inspect_results_completes_without_tmdb_and_preserves_saved_cards(
             response = await client.post(
                 "/api/recommendations/stream",
                 json={
-                    "message": "Tell me about the second one",
+                    "message": message,
                     "client_request_id": "inspect-card-1",
                     "conversation_id": str(conversation_id),
                     "expected_version": 2,
@@ -729,13 +779,19 @@ async def test_inspect_results_completes_without_tmdb_and_preserves_saved_cards(
         frames = [frame for frame in response.text.split("\n\n") if frame]
         answer_event = json.loads(frames[-1].split("data: ", 1)[1])
         assert answer_event["type"] == "completed"
-        assert "The Thing (1982)" in answer_event["data"]["answer"]
-        assert "TMDB has no provider data for US" in answer_event["data"]["answer"]
+        if turn_kind is TurnKind.OUT_OF_SCOPE:
+            assert answer_event["data"]["answer"] == recommendations_api.OUT_OF_SCOPE_ANSWER
+        else:
+            assert "The Thing (1982)" in answer_event["data"]["answer"]
+            assert "TMDB has no provider data for US" in answer_event["data"]["answer"]
         assert tmdb_requests == []
         assert persisted["p_status"] == "completed"
         saved_state = persisted["p_state"]
         assert saved_state["last_result"] == state["last_result"]  # type: ignore[index]
         assert saved_state["provider_lookups"] == state["provider_lookups"]  # type: ignore[index]
+        if turn_kind is TurnKind.OUT_OF_SCOPE:
+            assert saved_state["intent"]["genres"] == []  # type: ignore[index]
+            assert saved_state["last_clarification"] == "Which actor did you mean?"  # type: ignore[index]
         assert persisted["p_result"] == {"answer": answer_event["data"]["answer"]}
     finally:
         monkeypatch.setattr(app.state, "persistence", None, raising=False)
