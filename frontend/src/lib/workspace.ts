@@ -111,6 +111,16 @@ export function failureMessage(event: TraceEvent): string {
         : "Wait a moment, then try your request again.";
     return `The recommendation model is temporarily rate limited. Your conversation was not changed. ${hint}`;
   }
+  if (errorCode === "model_usage_limited") {
+    const limit = event.metadata?.usage_limit;
+    if (limit === "request") {
+      return "I hit this turn’s model request limit before I could finish. Your saved filters were not changed. Try again or start a new chat.";
+    }
+    if (limit === "output_tokens") {
+      return "I hit this turn’s response-length limit before I could finish. Your saved filters were not changed. Try a shorter request or start a new chat.";
+    }
+    return "I hit this turn’s model usage limit before I could finish. Your saved filters were not changed. Try again or start a new chat.";
+  }
   if (errorCode === "run_timeout") {
     return "The search took too long to finish. Your conversation was not changed—please try again.";
   }
@@ -118,7 +128,7 @@ export function failureMessage(event: TraceEvent): string {
     return "Movie data is temporarily unavailable. Your conversation was not changed—please try again.";
   }
   if (failureStage === "intent_extraction") {
-    return "I couldn’t interpret that request. Try a shorter prompt with a genre, actor, or rating.";
+    return "I couldn’t complete the interpretation for this turn. Your saved filters were not changed. Try again or start a new chat.";
   }
   if (failureStage === "run_finalization") {
     return "The results could not be saved. Your conversation was not changed—please try again.";
