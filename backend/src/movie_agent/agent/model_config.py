@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 DEFAULT_MODEL_PROVIDER = "openrouter"
-DEFAULT_MODEL_NAME = "openai/gpt-oss-20b"
+DEFAULT_MODEL_NAME = "openai/gpt-oss-120b"
 MODEL_API_KEYS = {
     "groq": "GROQ_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
