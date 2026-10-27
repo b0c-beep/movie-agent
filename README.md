@@ -6,7 +6,7 @@ Movie Agent helps answer the deceptively difficult question: **what should I wat
 
 Describe what you want in natural language. The agent can filter by genre, mood, release year or range, cast or crew, original language, maximum runtime, minimum TMDB rating, and similarity to a named movie. There is no fixed limit on how many of these filter types you can combine in one request; follow-up messages can refine them. Availability country controls where to check streaming options. Moods such as “dark” are treated as subjective preferences; factual filters are checked against movie data.
 
-New searches return four recommendations by default. You can request between one and ten; the agent explains when it cannot find enough verified matches. It streams safe **predict → decide → act** activity and presents movie cards with posters, ratings, match explanations, and regional providers.
+New searches return four recommendations by default, including requests phrased as “a movie”; say “one movie” to request a single result. You can request between one and ten; the agent explains when it cannot find enough verified matches. It streams safe **predict → decide → act** activity and presents movie cards with posters, ratings, match explanations, and regional providers.
 
 ## How Suggestions Are Made
 
