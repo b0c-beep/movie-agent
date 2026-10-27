@@ -112,6 +112,29 @@ describe("RecommendationWorkspace terminal events", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("saved filters were not changed");
   });
 
+  it("identifies a temporary provider failure without exposing provider details", async () => {
+    mocks.streamRecommendations.mockImplementation(
+      async (_input: unknown, onEvent: (event: unknown) => void) => {
+        onEvent(
+          traceEvent("failed", {
+            metadata: {
+              error_code: "model_provider_failed",
+              failure_stage: "intent_extraction",
+              exception_type: "UnexpectedModelBehavior",
+            },
+          }),
+        );
+        return { conversationId: "conv-1", runId: "run-1" };
+      },
+    );
+
+    render(createElement(RecommendationWorkspace));
+    await submitPrompt("rating above 8.5");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("temporary provider error");
+    expect(screen.getByRole("alert")).toHaveTextContent("saved filters were not changed");
+  });
+
   it("still advances the conversation when the run completes", async () => {
     mocks.getConversation.mockResolvedValue({
       conversation_id: "conv-2",

@@ -13,7 +13,15 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic_ai import capture_run_messages
 from pydantic_ai.exceptions import ModelRateLimitError, UsageLimitExceeded
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    RetryFeedbackPart,
+    ToolCallPart,
+)
 
 from movie_agent.agent.intent import extract_intent_patch
 from movie_agent.agent.model_config import configured_model_name
@@ -481,6 +489,7 @@ async def stream_recommendations(
             "intent": prior_intent.model_dump(mode="json"),
         }
         failure_stage = "intent_extraction"
+        intent_messages: list[ModelMessage] = []
         try:
             yield emit(
                 TraceStage.PREDICT,
@@ -509,7 +518,8 @@ async def stream_recommendations(
                     similar_reference = direct_reference or _saved_similar_reference(prior_state)
                     clarification = None
                 else:
-                    patch = await extract_intent_patch(body.message, prior_intent)
+                    with capture_run_messages() as intent_messages:
+                        patch = await extract_intent_patch(body.message, prior_intent)
                     turn_kind = patch.turn_kind
                     if turn_kind not in {TurnKind.INSPECT_RESULTS, TurnKind.OUT_OF_SCOPE}:
                         failure_stage = "tmdb_title_lookup"
@@ -868,7 +878,17 @@ async def stream_recommendations(
             )
             raise
         except Exception as error:
-            code = _failure_code(error)
+            intent_usage = (
+                _intent_failure_usage(intent_messages)
+                if failure_stage == "intent_extraction"
+                else None
+            )
+            code = (
+                "model_provider_failed"
+                if failure_stage == "intent_extraction"
+                and _last_model_response_failed(intent_messages)
+                else _failure_code(error)
+            )
             _log_run_failure(failure_stage, claimed.run_id, error, code)
             failure_result: dict[str, Any] = {"error_code": code}
             retry_after = _retry_after_seconds(error) if code == "model_rate_limited" else None
@@ -893,6 +913,7 @@ async def stream_recommendations(
                     error_code=code,
                     result=failure_result,
                     trace=trace,
+                    usage=intent_usage,
                 )
             yield terminal
 
@@ -908,6 +929,7 @@ async def _finalize(
     state: dict[str, Any] | None = None,
     result: dict[str, Any] | None = None,
     trace: list[dict[str, Any]] | None = None,
+    usage: dict[str, Any] | None = None,
     error_code: str | None = None,
 ) -> None:
     if claimed.lease_token is None:
@@ -920,6 +942,7 @@ async def _finalize(
         state=state,
         result=result,
         trace=trace,
+        usage=usage,
         error_code=error_code,
         model=configured_model_name(),
     )
@@ -1793,6 +1816,52 @@ def _failure_code(error: Exception) -> str:
     if isinstance(error, TmdbError):
         return "tmdb_unavailable"
     return "recommendation_failed"
+
+
+def _last_model_response_failed(messages: Sequence[ModelMessage]) -> bool:
+    last_response = next(
+        (message for message in reversed(messages) if isinstance(message, ModelResponse)), None
+    )
+    return last_response is not None and last_response.finish_reason == "error"
+
+
+def _intent_failure_usage(messages: Sequence[ModelMessage]) -> dict[str, Any] | None:
+    """Retain provider lookup keys and fixed labels, never model or user content."""
+    responses = [message for message in messages if isinstance(message, ModelResponse)][:6]
+    if not responses:
+        return None
+    generations = [
+        {
+            "id": response.provider_response_id
+            if response.provider_response_id
+            and response.provider_response_id.startswith("gen-")
+            and _REQUEST_ID.fullmatch(response.provider_response_id)
+            else None,
+            "finish_reason": response.finish_reason
+            if response.finish_reason in {"stop", "length", "content_filter", "tool_call", "error"}
+            else None,
+        }
+        for response in responses
+    ]
+    retry_causes = [
+        part.retry.cause
+        for message in messages
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, RetryFeedbackPart)
+        and part.retry.cause in {"validation_error", "no_output", "model_retry"}
+    ][:6]
+    return {
+        "intent_extraction": {
+            "generations": generations,
+            "retry_causes": retry_causes,
+            "misnamed_output_calls": sum(
+                isinstance(part, ToolCallPart) and part.tool_name == "functions.final_result"
+                for response in responses
+                for part in response.parts
+            ),
+        }
+    }
 
 
 def _failure_metadata(

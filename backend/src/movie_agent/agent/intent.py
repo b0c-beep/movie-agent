@@ -22,6 +22,20 @@ def build_intent_agent(model: Model | str | None = None) -> Agent[None, MovieInt
         resolved_model,
         # Groq rejects strict mode for this schema's optional/defaulted fields.
         output_type=output_type,
+        model_settings=(
+            {
+                "extra_body": {
+                    "provider": {
+                        "order": ["deepinfra"],
+                        "ignore": ["groq", "coreweave"],
+                        "require_parameters": True,
+                        "allow_fallbacks": True,
+                    }
+                }
+            }
+            if resolved_model == "openrouter:openai/gpt-oss-120b"
+            else None
+        ),
         system_prompt=(
             "Extract a small typed patch from the user's latest movie request. "
             "Return only constraints the user explicitly asked for; do not invent filters. "

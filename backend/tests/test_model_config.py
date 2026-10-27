@@ -15,8 +15,8 @@ def test_openrouter_is_the_default_provider_and_model(monkeypatch: pytest.Monkey
     monkeypatch.delenv("MODEL_NAME", raising=False)
 
     assert configured_model_provider() == "openrouter"
-    assert configured_model_name() == "openai/gpt-oss-20b"
-    assert configured_model() == "openrouter:openai/gpt-oss-20b"
+    assert configured_model_name() == "openai/gpt-oss-120b"
+    assert configured_model() == "openrouter:openai/gpt-oss-120b"
     assert configured_model_api_key_name() == "OPENROUTER_API_KEY"
 
 

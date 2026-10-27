@@ -45,6 +45,39 @@ async def test_intent_agent_returns_typed_patch_without_unrequested_filters() ->
     assert patch.similar_to_title is None
 
 
+def test_openrouter_intent_routing_preserves_other_model_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings: list[object] = []
+
+    def capture_agent(_model: object, **kwargs: object) -> object:
+        settings.append(kwargs["model_settings"])
+        return object()
+
+    monkeypatch.setattr(intent_agent, "Agent", capture_agent)
+
+    intent_agent.build_intent_agent("openrouter:openai/gpt-oss-120b")
+    intent_agent.build_intent_agent("openrouter:openai/gpt-oss-20b")
+    intent_agent.build_intent_agent("groq:openai/gpt-oss-20b")
+    intent_agent.build_intent_agent(TestModel())
+
+    assert settings == [
+        {
+            "extra_body": {
+                "provider": {
+                    "order": ["deepinfra"],
+                    "ignore": ["groq", "coreweave"],
+                    "require_parameters": True,
+                    "allow_fallbacks": True,
+                }
+            }
+        },
+        None,
+        None,
+        None,
+    ]
+
+
 @pytest.mark.asyncio
 async def test_intent_agent_rejects_empty_or_oversized_messages() -> None:
     prior = MovieIntent()
