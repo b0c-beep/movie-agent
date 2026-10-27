@@ -121,6 +121,9 @@ export function failureMessage(event: TraceEvent): string {
     }
     return "I hit this turn’s model usage limit before I could finish. Your saved filters were not changed. Try again or start a new chat.";
   }
+  if (errorCode === "model_provider_failed") {
+    return "The recommendation model had a temporary provider error. Your saved filters were not changed. Please try again.";
+  }
   if (errorCode === "run_timeout") {
     return "The search took too long to finish. Your conversation was not changed—please try again.";
   }
