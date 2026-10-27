@@ -17,15 +17,12 @@ import type { ThreadTurn } from "@/lib/workspace";
 
 export const EXAMPLE_PROMPTS = [
   "Show me three action movies.",
-  "Recommend three movies featuring both Tom Hanks and Meg Ryan.",
   "I want three suspenseful movies for tonight.",
   "Recommend three Japanese animated movies under 120 minutes.",
   "Find three movies rated at least 7.0 on TMDB.",
   "Recommend three movies similar to The Matrix (1999).",
   "Show me three French-language dramas released from 2000 through 2020.",
-  "Find five thrillers starring Denzel Washington released after 2000.",
   "Find three science fiction movies under 110 minutes and check streaming in Canada.",
-  "Find comedies with Jim Carrey from 1990 through 2000, under 130 minutes.",
 ];
 
 const TERMINAL_EVENTS = new Set([
