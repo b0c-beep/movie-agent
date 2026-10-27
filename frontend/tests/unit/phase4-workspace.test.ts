@@ -163,7 +163,7 @@ describe("phase 4 conversation workspace", () => {
     render(createElement(RecommendationWorkspace));
 
     expect(await screen.findByRole("heading", { name: "What should we watch tonight?" })).toBeInTheDocument();
-    expect(within(document.getElementById("example-prompts")!).getAllByRole("option")).toHaveLength(10);
+    expect(within(document.getElementById("example-prompts")!).getAllByRole("option")).toHaveLength(7);
     expect(mocks.getConversation).not.toHaveBeenCalled();
     expect(screen.queryByText("private old conversation text")).not.toBeInTheDocument();
   });
