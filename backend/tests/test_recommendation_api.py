@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import httpx
 import pytest
 from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    RetryFeedbackPart,
+    RetryInfo,
+    ThinkingPart,
+    ToolCallPart,
+    UserPromptPart,
+)
 
 import movie_agent.api.recommendations as recommendations_api
 from movie_agent.api.recommendations import MAX_RUN_SECONDS, RUN_LEASE_SECONDS
@@ -104,6 +114,159 @@ def test_model_usage_limit_metadata_names_only_the_limit_kind(message: str, limi
         "usage_limit": limit,
     }
     assert message not in str(metadata)
+
+
+def test_failed_intent_fingerprint_keeps_only_provider_lookup_and_fixed_labels() -> None:
+    secret = "private prompt and provider error text"
+    messages = [
+        ModelRequest(parts=[UserPromptPart(content=secret)]),
+        ModelResponse(
+            parts=[
+                ThinkingPart(content=secret),
+                ToolCallPart(tool_name="functions.final_result", args={"private": secret}),
+            ],
+            provider_response_id="gen-safe-123",
+            finish_reason="error",
+        ),
+        ModelRequest(parts=[RetryFeedbackPart(content=secret, retry=RetryInfo(cause="no_output"))]),
+    ]
+
+    assert recommendations_api._last_model_response_failed(messages)
+    usage = recommendations_api._intent_failure_usage(messages)
+
+    assert usage == {
+        "intent_extraction": {
+            "generations": [{"id": "gen-safe-123", "finish_reason": "error"}],
+            "retry_causes": ["no_output"],
+            "misnamed_output_calls": 1,
+        }
+    }
+    assert secret not in json.dumps(usage)
+
+    messages.append(
+        ModelResponse(
+            parts=[ThinkingPart(content=secret)],
+            provider_response_id="private prompt",
+            finish_reason="stop",
+        )
+    )
+    assert not recommendations_api._last_model_response_failed(messages)
+    usage = recommendations_api._intent_failure_usage(messages)
+    assert usage is not None
+    assert usage["intent_extraction"]["generations"][1]["id"] is None
+
+
+@pytest.mark.asyncio
+async def test_provider_stream_error_is_classified_and_persisted_without_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id, conversation_id, run_id, lease_token = (uuid4() for _ in range(4))
+    persisted: dict[str, object] = {}
+
+    def persistence_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else {}
+        if request.url.path.endswith("/rpc/create_conversation"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "conversation_id": str(conversation_id),
+                        "version": 1,
+                        "created_at": "2026-10-27T12:00:00+00:00",
+                    }
+                ],
+            )
+        if request.url.path.endswith("/rpc/claim_run"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "run_id": str(run_id),
+                        "status": "running",
+                        "replayed": False,
+                        "lease_token": str(lease_token),
+                        "lease_expires_at": "2026-10-27T12:03:00+00:00",
+                        "base_version": 1,
+                        "result": None,
+                        "trace": None,
+                        "error_code": None,
+                        "usage": None,
+                        "created_at": "2026-10-27T12:00:00+00:00",
+                        "completed_at": None,
+                    }
+                ],
+            )
+        assert request.url.path.endswith("/rpc/finalize_run")
+        persisted.update(body)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "run_id": str(run_id),
+                    "conversation_id": str(conversation_id),
+                    "version": 1,
+                    "status": "failed",
+                    "completed_at": "2026-10-27T12:00:01+00:00",
+                }
+            ],
+        )
+
+    secret = "private model response"
+    messages = [
+        ModelResponse(
+            parts=[ThinkingPart(content=secret)],
+            provider_response_id="gen-123",
+            finish_reason="error",
+        )
+    ]
+
+    @contextmanager
+    def capture_messages():
+        yield messages
+
+    async def failing_extract(_message: str, _prior: object) -> MovieIntentPatch:
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(recommendations_api, "capture_run_messages", capture_messages)
+    monkeypatch.setattr(recommendations_api, "extract_intent_patch", failing_extract)
+    monkeypatch.setattr(
+        app.state,
+        "persistence",
+        PersistenceClient(
+            httpx.AsyncClient(transport=httpx.MockTransport(persistence_handler)),
+            "https://project.supabase.co",
+            "test-secret",
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        app.state, "tmdb", TmdbClient(httpx.AsyncClient(), "test-token"), raising=False
+    )
+    monkeypatch.setenv("SESSION_SIGNING_KEY", SIGNING_KEY)
+    token = sign_session_token(session_id, datetime.now(UTC) + timedelta(hours=1), SIGNING_KEY)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        client.cookies.set("movie_agent_session", token)
+        response = await client.post(
+            "/api/recommendations/stream",
+            json={"message": "recommend a movie", "client_request_id": "req-provider-error"},
+        )
+
+    assert response.status_code == 200
+    assert persisted["p_status"] == "failed"
+    assert persisted["p_error_code"] == "model_provider_failed"
+    assert persisted["p_usage"] == {
+        "intent_extraction": {
+            "generations": [{"id": "gen-123", "finish_reason": "error"}],
+            "retry_causes": [],
+            "misnamed_output_calls": 0,
+        }
+    }
+    assert "model_provider_failed" in response.text
+    assert secret not in json.dumps(persisted)
+    assert secret not in response.text
 
 
 def test_recommendation_request_rejects_whitespace_only_message() -> None:
