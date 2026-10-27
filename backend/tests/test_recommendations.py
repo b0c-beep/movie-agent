@@ -8,7 +8,9 @@ from pydantic import ValidationError
 
 from movie_agent.agent.recommendations import (
     ProviderLookupOutcome,
+    _person_matches,
     assemble_recommendations,
+    explicit_filter_omissions,
     merge_intent,
     refresh_recommendation_availability,
 )
@@ -631,6 +633,245 @@ async def test_requested_actor_is_kept_in_bounded_movie_cast() -> None:
     cast = result.batch.recommendations[0].movie.cast
     assert len(cast) == 10
     assert cast[0].name == "Requested Actor"
+
+
+@pytest.mark.parametrize(
+    ("message", "patch", "missing"),
+    [
+        (
+            "Find five thrillers starring Denzel Washington released after 2000.",
+            MovieIntentPatch(
+                turn_kind=TurnKind.NEW_SEARCH,
+                genres=StringCollectionPatch(set=["thriller"]),
+                people=[PersonConstraint(name="Denzel Washington", role="actor")],
+                requested_count=5,
+            ),
+            ["release year"],
+        ),
+        (
+            "Recommend three movies featuring Tom Hanks.",
+            MovieIntentPatch(
+                turn_kind=TurnKind.NEW_SEARCH,
+                people=[PersonConstraint(name="Tom Hanks", role="director")],
+                requested_count=3,
+            ),
+            ["person"],
+        ),
+        (
+            "I want an action movie with Sylvester Stallone, made after 2004.",
+            MovieIntentPatch(
+                turn_kind=TurnKind.NEW_SEARCH,
+                genres=StringCollectionPatch(set=["action"]),
+                people=[PersonConstraint(name="Sylvester Stallone", role="actor")],
+            ),
+            ["release year", "number of movies"],
+        ),
+        (
+            "Find comedies with Jim Carrey from 1990 through 2000, under 130 minutes.",
+            MovieIntentPatch(
+                turn_kind=TurnKind.NEW_SEARCH,
+                genres=StringCollectionPatch(set=["comedy"]),
+                people=[PersonConstraint(name="Jim Carrey", role="actor")],
+                release_year_min=1990,
+                release_year_max=2000,
+            ),
+            ["runtime"],
+        ),
+        (
+            "Recommend three Japanese animated movies under 120 minutes.",
+            MovieIntentPatch(
+                turn_kind=TurnKind.NEW_SEARCH,
+                genres=StringCollectionPatch(set=["animation"]),
+                original_language="ja",
+                runtime_max_minutes=120,
+                requested_count=3,
+            ),
+            [],
+        ),
+        (
+            "Find three movies rated at least 7.0 on TMDB.",
+            MovieIntentPatch(
+                turn_kind=TurnKind.NEW_SEARCH,
+                tmdb_rating_min=7.0,
+                requested_count=3,
+            ),
+            [],
+        ),
+        (
+            "I want three cozy movies for tonight.",
+            MovieIntentPatch(
+                turn_kind=TurnKind.NEW_SEARCH,
+                moods=StringCollectionPatch(set=["cozy"]),
+                requested_count=3,
+            ),
+            [],
+        ),
+        (
+            "Find three science fiction movies under 110 minutes and check streaming in Canada.",
+            MovieIntentPatch(
+                turn_kind=TurnKind.NEW_SEARCH,
+                genres=StringCollectionPatch(set=["science fiction"]),
+                runtime_max_minutes=110,
+                country="CA",
+                requested_count=3,
+            ),
+            [],
+        ),
+        (
+            "Recommend three movies similar to The Matrix (1999).",
+            MovieIntentPatch(
+                turn_kind=TurnKind.NEW_SEARCH,
+                similar_to_title="The Matrix",
+                similar_to_year=1999,
+                requested_count=3,
+            ),
+            [],
+        ),
+        (
+            "Recommend three movies featuring both Tom Hanks and Meg Ryan.",
+            MovieIntentPatch(
+                turn_kind=TurnKind.NEW_SEARCH,
+                people=[
+                    PersonConstraint(name="Tom Hanks", role="actor"),
+                    PersonConstraint(name="Meg Ryan", role="actor"),
+                ],
+                requested_count=3,
+            ),
+            [],
+        ),
+        (
+            "Find three drama movies.",
+            MovieIntentPatch(turn_kind=TurnKind.NEW_SEARCH, requested_count=3),
+            ["genre"],
+        ),
+        (
+            "Find three action movies, not horror.",
+            MovieIntentPatch(
+                turn_kind=TurnKind.NEW_SEARCH,
+                genres=StringCollectionPatch(set=["action"]),
+                requested_count=3,
+            ),
+            [],
+        ),
+        (
+            "Recommend three movies released in 2010.",
+            MovieIntentPatch(turn_kind=TurnKind.NEW_SEARCH, requested_count=3),
+            ["release year"],
+        ),
+        (
+            "I want three cozy movies for tonight.",
+            MovieIntentPatch(turn_kind=TurnKind.NEW_SEARCH, requested_count=3),
+            ["mood"],
+        ),
+        (
+            "I want three cozy movies, not dark ones.",
+            MovieIntentPatch(
+                turn_kind=TurnKind.NEW_SEARCH,
+                moods=StringCollectionPatch(set=["cozy"]),
+                requested_count=3,
+            ),
+            [],
+        ),
+        (
+            "Find three movies rated at least 7.0 on TMDB.",
+            MovieIntentPatch(turn_kind=TurnKind.NEW_SEARCH, requested_count=3),
+            ["TMDB rating"],
+        ),
+        (
+            "Recommend three Japanese animated movies under 120 minutes.",
+            MovieIntentPatch(
+                turn_kind=TurnKind.NEW_SEARCH,
+                genres=StringCollectionPatch(set=["animation"]),
+                runtime_max_minutes=120,
+                requested_count=3,
+            ),
+            ["movie language"],
+        ),
+        (
+            "Check streaming availability in Canada for three action movies.",
+            MovieIntentPatch(
+                turn_kind=TurnKind.NEW_SEARCH,
+                genres=StringCollectionPatch(set=["action"]),
+                requested_count=3,
+            ),
+            ["streaming country"],
+        ),
+        (
+            "Recommend three movies similar to The Matrix (1999).",
+            MovieIntentPatch(turn_kind=TurnKind.NEW_SEARCH, requested_count=3),
+            ["similar-title reference"],
+        ),
+        (
+            "Recommend three movies similar to The Matrix (1999).",
+            MovieIntentPatch(
+                turn_kind=TurnKind.NEW_SEARCH,
+                similar_to_title="The Matrix",
+                requested_count=3,
+            ),
+            ["similar-title year"],
+        ),
+        (
+            "The rating needs to be above 8.5.",
+            MovieIntentPatch(turn_kind=TurnKind.REFINE),
+            ["TMDB rating"],
+        ),
+        (
+            "Remove the actor requirement and keep the other filters.",
+            MovieIntentPatch(turn_kind=TurnKind.REFINE, clear_filters=["people"]),
+            [],
+        ),
+        (
+            "Remove the comedy filter.",
+            MovieIntentPatch(
+                turn_kind=TurnKind.REFINE,
+                genres=StringCollectionPatch(clear=True),
+            ),
+            [],
+        ),
+    ],
+)
+def test_explicit_filter_audit_detects_omissions(message, patch, missing) -> None:
+    assert explicit_filter_omissions(message, patch) == missing
+
+
+def test_unqualified_person_matches_cast_but_not_crew() -> None:
+    details = _details(1, director="Requested Person").model_copy(
+        update={
+            "crew": [
+                TmdbCrewMember(
+                    tmdb_id=2000,
+                    name="Requested Person",
+                    job="Producer",
+                    department="Production",
+                )
+            ]
+        }
+    )
+
+    assert not _person_matches(PersonConstraint(name="Requested Person", tmdb_id=2000), details)
+    assert _person_matches(
+        PersonConstraint(name="Requested Person", role="producer", tmdb_id=2000), details
+    )
+
+
+def test_explicit_filter_audit_accepts_matching_saved_filters() -> None:
+    prior = MovieIntent(
+        genres=["comedy"],
+        people=[PersonConstraint(name="Tom Hanks", role="actor")],
+        release_year_min=2005,
+        country="RO",
+        requested_count=3,
+    )
+    patch = MovieIntentPatch(turn_kind=TurnKind.REFINE)
+
+    assert (
+        explicit_filter_omissions(
+            "Find three comedy movies with Tom Hanks released after 2000 and streaming in Romania.",
+            patch,
+            prior,
+        )
+        == []
+    )
 
 
 @pytest.mark.asyncio
