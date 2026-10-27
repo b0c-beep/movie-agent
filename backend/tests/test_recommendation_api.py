@@ -21,7 +21,12 @@ from pydantic_ai.messages import (
 import movie_agent.api.recommendations as recommendations_api
 from movie_agent.api.recommendations import MAX_RUN_SECONDS, RUN_LEASE_SECONDS
 from movie_agent.main import app
-from movie_agent.models.intent import MovieIntentPatch, StringCollectionPatch, TurnKind
+from movie_agent.models.intent import (
+    MovieIntentPatch,
+    PersonConstraint,
+    StringCollectionPatch,
+    TurnKind,
+)
 from movie_agent.models.movies import (
     MovieDetails,
     Rating,
@@ -988,7 +993,7 @@ async def test_non_discovery_turns_complete_without_tmdb_and_preserve_saved_card
 
 
 @pytest.mark.asyncio
-async def test_clarification_result_uses_the_complete_result_shape(
+async def test_missing_explicit_filter_fails_closed_with_clarification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session_id = uuid4()
@@ -1064,10 +1069,12 @@ async def test_clarification_result_uses_the_complete_result_shape(
     monkeypatch.setenv("SESSION_SIGNING_KEY", SIGNING_KEY)
 
     async def extract_patch(message: str, prior: object) -> MovieIntentPatch:
-        assert message == "Help me narrow this down"
+        assert message == "Find five thrillers starring Denzel Washington released after 2000."
         return MovieIntentPatch(
             turn_kind=TurnKind.NEW_SEARCH,
-            clarification="Which decade do you prefer?",
+            genres={"set": ["thriller"]},
+            people=[PersonConstraint(name="Denzel Washington", role="actor")],
+            requested_count=5,
         )
 
     monkeypatch.setattr(recommendations_api, "extract_intent_patch", extract_patch)
@@ -1080,7 +1087,12 @@ async def test_clarification_result_uses_the_complete_result_shape(
             client.cookies.set("movie_agent_session", token)
             response = await client.post(
                 "/api/recommendations/stream",
-                json={"message": "Help me narrow this down", "client_request_id": "req-clarify"},
+                json={
+                    "message": (
+                        "Find five thrillers starring Denzel Washington released after 2000."
+                    ),
+                    "client_request_id": "req-clarify",
+                },
             )
 
         assert response.status_code == 200
@@ -1089,11 +1101,16 @@ async def test_clarification_result_uses_the_complete_result_shape(
         )
         event = json.loads(frame.split("data: ", 1)[1])
         assert event["data"]["requested_count"] == 4
-        assert event["data"]["clarification"] == "Which decade do you prefer?"
+        assert event["data"]["clarification"] == (
+            "I may have missed an explicit release year filter. Please restate the request; "
+            "I kept your saved filters unchanged."
+        )
         assert event["data"]["issues"] == []
         assert event["data"]["provider_lookups"] == []
         assert persisted["p_result"] == event["data"]
-        assert persisted["p_state"]["last_clarification"] == "Which decade do you prefer?"
+        assert persisted["p_state"]["last_clarification"] == event["data"]["clarification"]
+        assert persisted["p_state"]["intent"]["genres"] == []
+        assert persisted["p_state"]["intent"]["people"] == []
     finally:
         monkeypatch.setattr(app.state, "persistence", None, raising=False)
         monkeypatch.setattr(app.state, "tmdb", None, raising=False)
