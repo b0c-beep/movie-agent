@@ -30,7 +30,6 @@ from movie_agent.agent.recommendations import (
     ProviderLookup,
     ProviderLookupOutcome,
     assemble_recommendations,
-    explicit_filter_omissions,
     is_supported_tmdb_genre,
     merge_intent,
     refresh_recommendation_availability,
@@ -521,16 +520,6 @@ async def stream_recommendations(
                 else:
                     with capture_run_messages() as intent_messages:
                         patch = await extract_intent_patch(body.message, prior_intent)
-                    missing_filters = explicit_filter_omissions(body.message, patch, prior_intent)
-                    if missing_filters:
-                        labels = ", ".join(missing_filters)
-                        patch = MovieIntentPatch(
-                            turn_kind=TurnKind.REFINE,
-                            clarification=(
-                                f"I may have missed an explicit {labels} filter. Please restate "
-                                "the request; I kept your saved filters unchanged."
-                            ),
-                        )
                     turn_kind = patch.turn_kind
                     if turn_kind not in {TurnKind.INSPECT_RESULTS, TurnKind.OUT_OF_SCOPE}:
                         failure_stage = "tmdb_title_lookup"
