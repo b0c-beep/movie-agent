@@ -664,7 +664,25 @@ async def test_requested_actor_is_kept_in_bounded_movie_cast() -> None:
                 genres=StringCollectionPatch(set=["action"]),
                 people=[PersonConstraint(name="Sylvester Stallone", role="actor")],
             ),
-            ["release year", "number of movies"],
+            ["release year"],
+        ),
+        (
+            "I want an action movie with Sylvester Stallone.",
+            MovieIntentPatch(
+                turn_kind=TurnKind.NEW_SEARCH,
+                genres=StringCollectionPatch(set=["action"]),
+                people=[PersonConstraint(name="Sylvester Stallone", role="actor")],
+            ),
+            [],
+        ),
+        (
+            "Recommend one action movie with Sylvester Stallone.",
+            MovieIntentPatch(
+                turn_kind=TurnKind.NEW_SEARCH,
+                genres=StringCollectionPatch(set=["action"]),
+                people=[PersonConstraint(name="Sylvester Stallone", role="actor")],
+            ),
+            ["number of movies"],
         ),
         (
             "Find comedies with Jim Carrey from 1990 through 2000, under 130 minutes.",

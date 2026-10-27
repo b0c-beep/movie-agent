@@ -287,7 +287,7 @@ def explicit_filter_omissions(
 
     count_match = re.search(
         r"\b(?:only|just|give me|recommend|find|show me)?\s*"
-        r"(one|a|an|two|three|four|five|six|seven|eight|nine|ten|\d{1,2})\s+"
+        r"(one|two|three|four|five|six|seven|eight|nine|ten|\d{1,2})\s+"
         r"(?:[\w-]+\s+){0,3}(?:movies?|films?|thrillers?|comedies?|dramas?|documentaries?)\b",
         text,
     ) or re.search(
@@ -409,8 +409,6 @@ def _is_negated(text: str, phrase: str) -> bool:
 def _number_value(value: str) -> int | None:
     values = {
         "one": 1,
-        "a": 1,
-        "an": 1,
         "two": 2,
         "three": 3,
         "four": 4,
