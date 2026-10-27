@@ -155,7 +155,7 @@ test("unlocks the app and displays streamed grounded recommendations", async ({ 
   const sideRailBox = await sideRail.boundingBox();
   expect(sideRailBox!.x).toBeGreaterThan(transcriptBox!.x + transcriptBox!.width - 1);
   await expect(sideRail).toContainText("Results requested: 1");
-  await expect(sideRail.locator(".examplePrompt")).toHaveCount(7);
+  await expect(sideRail.locator(".examplePrompt")).toHaveCount(9);
   expect(await page.locator("html").evaluate((node) => getComputedStyle(node).colorScheme)).toBe("dark");
   const poster = page.getByRole("img", { name: "The Matrix poster" });
   await expect(poster).toBeVisible();

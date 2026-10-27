@@ -17,12 +17,14 @@ import type { ThreadTurn } from "@/lib/workspace";
 
 export const EXAMPLE_PROMPTS = [
   "Show me three action movies.",
+  "Find one action movie starring Arnold Schwarzenegger.",
   "I want three suspenseful movies for tonight.",
   "Recommend three Japanese animated movies under 120 minutes.",
   "Find three movies rated at least 7.0 on TMDB.",
   "Recommend three movies similar to The Matrix (1999).",
   "Show me three French-language dramas released from 2000 through 2020.",
   "Find three science fiction movies under 110 minutes and check streaming in Canada.",
+  "Find one romance movie starring Dakota Johnson.",
 ];
 
 const TERMINAL_EVENTS = new Set([

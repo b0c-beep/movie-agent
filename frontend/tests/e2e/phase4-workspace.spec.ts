@@ -145,7 +145,7 @@ test("starts blank on page load without restoring a saved conversation", async (
   await expect(page.getByLabel("Message")).toHaveValue("");
   await expect(page.getByText("private old conversation text")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "New chat" })).toHaveCount(0);
-  await expect(page.locator(".examplePrompt")).toHaveCount(7);
+  await expect(page.locator(".examplePrompt")).toHaveCount(9);
   await page.getByLabel("Message").focus();
   await page.getByLabel("Message").press("ArrowDown");
   await expect(page.getByRole("option", { name: "Show me three action movies." })).toHaveAttribute(
