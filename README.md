@@ -10,11 +10,12 @@ New searches return four recommendations by default. You can request between one
 
 ## How Suggestions Are Made
 
-1. **Parse:** Pydantic AI sends your request to GPT-OSS 20B through OpenRouter and turns it into typed filters. Refinements carry forward preferences from the current conversation unless you change them.
+1. **Parse:** Pydantic AI sends your request to GPT-OSS 120B through OpenRouter and turns it into typed filters. Refinements carry forward preferences from the current conversation unless you change them.
 2. **Search:** The backend asks TMDB for candidate movies and their details.
 3. **Verify:** The backend checks factual filters against those details and shows matching movies in TMDB's discovery order. There is no personalized ranking. Mood is subjective; unclear requests get a clarification, and too few matches produce an explained shortfall.
 
 Intent extraction can use up to six model requests and 10,000 output tokens per turn. If either limit is reached, the agent explains which one and says the saved filters were not changed.
+OpenRouter intent requests for the default model prefer DeepInfra, with fallback to other eligible hosts except the Groq and CoreWeave endpoints that failed local checks. A provider outage can still interrupt a request; a failed run keeps a bounded diagnostic fingerprint in its private run record without storing model content.
 
 ## Architecture
 
@@ -55,7 +56,7 @@ flowchart LR
 
 - **Web app · Next.js** — conversation, filters, movie cards, and streamed updates.
 - **API · FastAPI** — session checks, recommendation flow, and movie-fact verification.
-- **Inference · Pydantic AI + OpenRouter** — routes GPT-OSS 20B and converts messages into typed preference updates.
+- **Inference · Pydantic AI + OpenRouter** — routes GPT-OSS 120B and converts messages into typed preference updates.
 - **Connected services** — TMDB for movie data, OMDb for optional ratings, and Supabase for session and conversation state.
 
 ## Data Sources
