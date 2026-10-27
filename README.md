@@ -10,7 +10,7 @@ New searches return four recommendations by default. You can request between one
 
 ## How Suggestions Are Made
 
-1. **Parse:** Pydantic AI sends your request to GPT-OSS 120B through OpenRouter and turns it into typed filters. Refinements carry forward preferences from the current conversation unless you change them.
+1. **Parse:** Pydantic AI sends your request to GPT-OSS 120B through OpenRouter and turns it into typed filters. A deterministic check catches common explicit filters omitted during parsing and asks you to restate them before searching. A person without an explicit crew role means an actor in the cast. Refinements carry forward preferences from the current conversation unless you change them.
 2. **Search:** The backend asks TMDB for candidate movies and their details.
 3. **Verify:** The backend checks factual filters against those details and shows matching movies in TMDB's discovery order. There is no personalized ranking. Mood is subjective; unclear requests get a clarification, and too few matches produce an explained shortfall.
 
